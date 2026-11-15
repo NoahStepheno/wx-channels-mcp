@@ -1,0 +1,11 @@
+#!/bin/sh
+# 仓库卫生守卫：拦截本地登录态/浏览器 profile/缓存/未脱敏探路产物入库。
+# 启用：git config core.hooksPath .githooks
+set -e
+blocked=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|/)\.botharness/|(^|/)Cookies$|Login Data|\.pyc$|(^|/)probe-out/|(^|/)\.venv/|(^|/)\.pytest_cache/' || true)
+if [ -n "$blocked" ]; then
+  echo "pre-commit 拒绝提交：以下文件属于本地运行产物/登录态，不允许入库：" >&2
+  echo "$blocked" | sed 's/^/  - /' >&2
+  echo "如确需提交，请先移出 .botharness/ 或使用 git commit --no-verify（不建议）。" >&2
+  exit 1
+fi
