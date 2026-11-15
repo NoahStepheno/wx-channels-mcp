@@ -43,7 +43,11 @@
 
 ### P1 流量来源构成
 推荐 / 关注 / 朋友 / 搜一搜 / 主页 / 其他。视频号来源结构与抖音差异大，缺这块只能给数字、无法归因。
-数据源已定位：`POST /statistic/feed_aggreagate_data_by_tab_type`，入参 `{feedId, startTs, endTs, interval: Day}`，返回 `dataByTabtype`（`tabTypeName` 如"主页"）。参数单位/枚举未试通，属实现期工作，**不阻塞 P0**；拿不到就记 `skipped(no_source_field)`。
+数据源尝试过：`POST /statistic/feed_aggreagate_data_by_tab_type`，入参 `{feedId, startTs, endTs, interval: Day}`。**2026-11-15 实测两轮全挂**（`300999 request failed`），试过 `interval=3`（`gx.Day` 的实际值）+ 秒/毫秒时间戳、`feedId` 带/不带 `export/` 前缀、补/不补 `_log_finder_id`，均失败。**结论：P1 记为 `skipped(no_source_field)`，停止猜参。**
+留下的线索（下次再碰时先看这三条，别重头来）：
+- bundle 里来源维度取的是 **`dataByFanstype`**（`sourceData = t.dataByFanstype`），不是 `dataByTabtype`——字段名可能一直找错了
+- 同一接口大概率还要 `busiType` 或 iframe 会话上下文（缺的是环境，不是参数名）
+- 交叉验证入口：`new_post_total_data` 里若带来源维度，可先拿它当 P1 的低保真替代
 
 ### P2 粉丝
 新增关注、取关、来源（有则更好，可后置）
@@ -177,6 +181,11 @@
    - **但留存口径另有出处**：后台的「观众留存趋势」走 `get_feed_lost_rate` / 组件 `PostChurnRate`，与 `fastFlipRate` 无关。`fastFlipRate` 大概率就停在"原始值存档、不解释"的位置，3 秒留存改由 §3 P0.5 的曲线提供（若曲线粒度够）。别再为了这个字段耗探路预算。
    - 算术旁证（样例：162s 视频、574 播放、均播 23.79s、完播 5.92%）：若 0.336 是留存，通过 3 秒的 193 人需平均看 64.8s（占时长 40%）且其中 17.6% 看完；若是快划率，通过 3 秒的 381 人平均 34.3s、8.9% 看完——后者更符合 162s 长视频的常见形态。**旁证不作数，只解释为什么卡这个字段。**
 3. `createTime` 是 Unix 秒，落库转 ISO8601 + 保留原值；时区按 `Asia/Shanghai`。
+4. **重播（loop）会让均播 > 时长，这不是单位错。** 锚点 B 的判法分三档，避免把正常作品误判成 `unit_mismatch` 而丢数据：
+   - `avg_play_time_sec <= duration_sec * 1.05` → 正常
+   - `duration_sec * 1.05 < avg_play_time_sec <= duration_sec * 1.5` → 记 `replay_suspected=1`，**不停字段**，但该作品不进 H1 判据
+   - `avg_play_time_sec > duration_sec * 1.5` → 判 `unit_mismatch`，停用该字段（这个倍数只能来自重播之外的错误，比如时长单位是毫秒）
+   - 同理 `fullPlayRate <= avg_play_time_sec / duration_sec + 容差` 是恒真约束（完播的人必然贡献满时长），违反才是真异常。
 
 **风险登记**
 - 同源接口**未公开、无文档**，随时可能改版/加签名参数。缓解：`parser_version` 记录、字段缺失走 `parse_failed` 而非静默 0、每作品每日最多 1 次调用。
