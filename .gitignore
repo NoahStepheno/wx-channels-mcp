@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+build/
+dist/
+
+# 本地探路/运行产物：登录态、缓存、截图与原始 JSON 一律不入库
+.botharness/
+
+# 数据与登录态
+data/
+*.sqlite
+*.db

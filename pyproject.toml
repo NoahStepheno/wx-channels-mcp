@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77,<81", "wheel>=0.45,<1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wx-channels-mcp"
+version = "0.1.0"
+description = "Local WeChat Channels (视频号) creator MCP server using a persistent browser login session."
+readme = "README.md"
+license = "AGPL-3.0-only"
+requires-python = ">=3.11"
+dependencies = [
+  "fastmcp>=3.4,<4",
+  "playwright>=1.45",
+  "tzdata>=2024.1",
+]
+
+[project.scripts]
+wx-channels-mcp = "wx_channels_mcp.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
