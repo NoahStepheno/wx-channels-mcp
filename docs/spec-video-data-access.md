@@ -122,6 +122,10 @@
 6. **老作品接入**：已过 +7 的记 `backfill` + 实际 offset，不参与 +3/+7 对比。
 7. **口径**：完播率/平均时长只用「作品自发布起累计」；平台若只给周期口径，必须带 `period`，且只做同周期比较。
 8. **时间精度降级**：只有日期时按自然日算（`day_offset`），`d3` = 恰好第 3 天，不做小数天。
+9. **late 快照不可与 on_time 混比（2026-11-15 补，回声）**：`offset_days` 越大，累计播放越多，6.99 天的 d3 和 3.1 天的 d3 不是同一个东西。因此：
+   - `late=1` 的行**照常落库、照常显示**（不删数据），但**默认不进基准线与任何跨条对比**；
+   - 确需使用（样本不足）时，必须同行记录 `offset_days`，并只与 `offset_days` 相差 ≤0.5 天的快照比较，且在复盘里注明"含迟到快照"；
+   - 基准线只用 `on_time=1` 的行。这条与「不删数据」不冲突：留档 ≠ 可混比。
 
 ### 5.4 状态与缺失原因（互斥，每快照只有一个 reason）
 
@@ -165,6 +169,7 @@
 - **锚点 A（必做，Human 每批一次）**：人类本来就要手报数字（+3/+7 各报 3 个数）。用同一作品的**手抄值**当锚，接口值 vs 手抄值，比率类相对误差 ≤2%；超差不采信、记 `unit_mismatch`。这是唯一真正独立于我方代码的证据，且不额外增加人类负担。
 - **锚点 B（自动，每次同步免费做）**：跨接口内部一致性——`avgPlayTimeSec ≤ duration`；`fullPlayRate` 与 `avgPlayTimeSec/duration` 同向不悖；若 P0.5 留存曲线可用，则曲线积分 ≈ `avgPlayTimeSec`、末端 ≈ `fullPlayRate`。不满足即 `unit_mismatch`，**不猜哪个对，先停用该字段**。
 - 两条都过才算「口径可信」；只有 B 过、A 缺失 → 字段标 `pending_human_anchor`，可落库但不进 H1。
+- **`insufficient_data` 不算 B 通过**：缺时长或均播时校验无从做起（如 `duration` 缺失），必须显式落 `anchor_unverified=1`，不许因为"没报错"就当通过——这是最容易静默放行的路径。
 
 **登录态就是两个 cookie（2026-11-15 实测）**：`channels.weixin.qq.com` 登录后只需 `sessionid` + `wxuin`，纯 Python `urllib` POST **不启浏览器**即可 `errCode:0` 取数。所以架构按「登录层只产出 cookie / 取数层是普通 HTTP 客户端」解耦，可单测、可 mock。**`sessionid` 是 bearer 凭证，等价于账号密码**：不落库、不写日志、不进样例 JSON、不出现在异常栈里（异常包装 `SESSION_COOKIE=<redacted>`）；`DATA_DIR` 与 `browser-profile` 与抖音**永不共用**。
 
