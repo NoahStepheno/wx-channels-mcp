@@ -15,8 +15,8 @@ def conn():
     c.row_factory = sqlite3.Row
     init_db(c)
     c.execute(
-        "INSERT INTO videos (video_id, account_id, published_at, first_seen_at, last_seen_at)"
-        " VALUES ('vid1', 'acc', '2026-11-11T10:00:00+00:00', 'x', 'x')"
+        "INSERT INTO videos (video_id, account_id, published_at, duration_sec, first_seen_at, last_seen_at)"
+        " VALUES ('vid1', 'acc', '2026-11-11T10:00:00+00:00', 162, 'x', 'x')"
     )
     c.execute(
         "INSERT INTO snapshots (video_id, snapshot_kind, fetched_at, last_seen_at, offset_days,"
@@ -55,7 +55,8 @@ def test_review_table_columns_present(conn, tmp_path):
     assert "keep_rate_3s" in record
     assert "pending_unit_check" in record
     assert record["keep_rate_3s"] == ""
-    assert record["published_date_local"] == "2026-11-11", "按 Asia/Shanghai 的本地日期"
+    assert record["published_date_local"] == "2026-11-11", "10:00Z = 当地 18:00，仍是同一天"
+    assert record["duration_sec"] == "162", "复盘要用时长判断节奏，缺失就得回库 join"
 
 
 def test_since_filter(conn):

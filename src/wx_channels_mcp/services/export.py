@@ -19,6 +19,7 @@ COLUMNS = (
     "play_count",
     "finish_rate",
     "avg_watch_sec",
+    "duration_sec",
     "fast_flip_rate",
     "keep_rate_3s",
     "pending_unit_check",
@@ -36,7 +37,7 @@ _QUERY = """
 SELECT s.video_id, v.published_at,
        NULL AS published_date_local,
        s.snapshot_kind, s.offset_days, s.on_time, s.snapshot_late,
-       s.play_count, s.finish_rate, s.avg_watch_sec, s.fast_flip_rate, s.keep_rate_3s,
+       s.play_count, s.finish_rate, s.avg_watch_sec, v.duration_sec, s.fast_flip_rate, s.keep_rate_3s,
        s.pending_unit_check, s.like_count, s.comment_count,
        s.share_count, s.favorite_count, s.follower_delta, s.completeness,
        s.anchor_status, s.replay_suspected
