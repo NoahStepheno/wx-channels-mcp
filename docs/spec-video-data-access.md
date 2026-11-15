@@ -126,6 +126,10 @@
    - `late=1` 的行**照常落库、照常显示**（不删数据），但**默认不进基准线与任何跨条对比**；
    - 确需使用（样本不足）时，必须同行记录 `offset_days`，并只与 `offset_days` 相差 ≤0.5 天的快照比较，且在复盘里注明"含迟到快照"；
    - 基准线只用 `on_time=1` 的行。这条与「不删数据」不冲突：留档 ≠ 可混比。
+10. **`replay_suspected` 分两级处理（2026-11-15 补，回声）**：重播是**结果**，不是**误差**——它是钩子有效的证据之一。把它整类踢出基准线，等于系统性地删掉表现最好的样本，基准线被压低，之后所有作品都会显得像爆款。因此拆成两个判据：
+    - `is_baseline_eligible`（进基准线）：允许 `replay_suspected=1`，仍要求 `on_time=1`、锚点通过、非 `unit_mismatch`。基准线统计必须同时报「含重播 n / 不含重播 n」两个数，差值大就说明重播集中在少数作品。
+    - `is_compare_eligible`（A/C 对比、跨条排名）：额外排除 `replay_suspected=1`，因为重播量不同会让留存类指标不可比。
+    - 一句话：**进基准线可以，进对比不行。**
 
 ### 5.4 状态与缺失原因（互斥，每快照只有一个 reason）
 
@@ -169,6 +173,7 @@
 - **锚点 A（必做，Human 每批一次）**：人类本来就要手报数字（+3/+7 各报 3 个数）。用同一作品的**手抄值**当锚，接口值 vs 手抄值，比率类相对误差 ≤2%；超差不采信、记 `unit_mismatch`。这是唯一真正独立于我方代码的证据，且不额外增加人类负担。
 - **锚点 B（自动，每次同步免费做）**：跨接口内部一致性——`avgPlayTimeSec ≤ duration`；`fullPlayRate` 与 `avgPlayTimeSec/duration` 同向不悖；若 P0.5 留存曲线可用，则曲线积分 ≈ `avgPlayTimeSec`、末端 ≈ `fullPlayRate`。不满足即 `unit_mismatch`，**不猜哪个对，先停用该字段**。
 - 两条都过才算「口径可信」；只有 B 过、A 缺失 → 字段标 `pending_human_anchor`，可落库但不进 H1。
+- **校验状态可升级、指标值不可改**：先 `anchor_unverified=1`、后来补齐 `duration` 得出确定结论，允许改写 `anchor_status`/`anchor_unverified`（这是校验状态，不是指标），但必须留 `anchor_checked_at` 与 `anchor_evidence`（哪几个数算的），否则事后无法解释某个字段为什么被停用。
 - **`insufficient_data` 不算 B 通过**：缺时长或均播时校验无从做起（如 `duration` 缺失），必须显式落 `anchor_unverified=1`，不许因为"没报错"就当通过——这是最容易静默放行的路径。
 
 **登录态就是两个 cookie（2026-11-15 实测）**：`channels.weixin.qq.com` 登录后只需 `sessionid` + `wxuin`，纯 Python `urllib` POST **不启浏览器**即可 `errCode:0` 取数。所以架构按「登录层只产出 cookie / 取数层是普通 HTTP 客户端」解耦，可单测、可 mock。**`sessionid` 是 bearer 凭证，等价于账号密码**：不落库、不写日志、不进样例 JSON、不出现在异常栈里（异常包装 `SESSION_COOKIE=<redacted>`）；`DATA_DIR` 与 `browser-profile` 与抖音**永不共用**。
