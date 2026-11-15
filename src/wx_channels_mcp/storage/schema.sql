@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
     play_count      INTEGER,
     finish_rate     REAL,
     avg_watch_sec   REAL,
+    fast_flip_rate  REAL,          -- 接口原始值，口径未定前不进任何对比
     like_count      INTEGER,
     comment_count   INTEGER,
     share_count     INTEGER,

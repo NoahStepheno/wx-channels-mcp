@@ -26,6 +26,7 @@ ENRICHABLE_COLUMNS = (
     "play_count",
     "finish_rate",
     "avg_watch_sec",
+    "fast_flip_rate",
     "like_count",
     "comment_count",
     "share_count",
