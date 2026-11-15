@@ -17,21 +17,31 @@ def conn():
     c.close()
 
 
-def test_three_times_across_two_batches_upgrades_to_unsupported(conn):
-    record_absence(conn, "vid", ["fav_count"], batch_id="b1", checked_at="t1")
-    record_absence(conn, "vid", ["fav_count"], batch_id="b1", checked_at="t2")
-    upgraded = record_absence(conn, "vid", ["fav_count"], batch_id="b1", checked_at="t3")
+def test_batch_retries_count_once(conn):
+    """回声复现的 bug：同批次重试 + 另一批次不得凑成 3 次。"""
+    record_absence(conn, "vid", ["fav_count"], batch_id="A", checked_at="t1")
+    record_absence(conn, "vid", ["fav_count"], batch_id="A", checked_at="t2")
+    upgraded = record_absence(conn, "vid", ["fav_count"], batch_id="B", checked_at="t3")
 
-    assert upgraded == [], "同一批次重试不算跨批次，不得升级"
     row = get_absence(conn, "vid")[0]
-    assert row["consecutive_missing"] == 3
+    assert row["consecutive_missing"] == 2, "同批次内抓几次都只算 1 次"
+    assert row["batches_seen"] == ["A", "B"]
+    assert upgraded == [], "只有 2 个批次，不得升 unsupported"
     assert row["status"] == "counting"
 
-    upgraded = record_absence(conn, "vid", ["fav_count"], batch_id="b2", checked_at="t4")
-    assert upgraded == ["fav_count"]
+
+def test_three_distinct_batches_upgrade_to_unsupported(conn):
+    record_absence(conn, "vid", ["fav_count"], batch_id="b1", checked_at="t1")
+    record_absence(conn, "vid", ["fav_count"], batch_id="b1", checked_at="t2")  # 重试
+    record_absence(conn, "vid", ["fav_count"], batch_id="b2", checked_at="t3")
+    assert get_absence(conn, "vid")[0]["status"] == "counting"
+
+    upgraded = record_absence(conn, "vid", ["fav_count"], batch_id="b3", checked_at="t4")
     row = get_absence(conn, "vid")[0]
+    assert upgraded == ["fav_count"]
+    assert row["consecutive_missing"] == 3
     assert row["status"] == "unsupported"
-    assert row["batches_seen"] == ["b1", "b2"]
+    assert row["batches_seen"] == ["b1", "b2", "b3"]
 
 
 def test_reading_field_again_resets_counter(conn):

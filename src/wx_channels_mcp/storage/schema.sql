@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS snapshots (
     finish_rate     REAL,
     avg_watch_sec   REAL,
     fast_flip_rate  REAL,          -- 接口原始值，口径未定前不进任何对比
+    keep_rate_3s    REAL,          -- 派生列（口径核实后才有值），不回填原始列
+    pending_unit_check INTEGER NOT NULL DEFAULT 1,
     like_count      INTEGER,
     comment_count   INTEGER,
     share_count     INTEGER,

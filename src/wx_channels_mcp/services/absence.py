@@ -53,10 +53,19 @@ def record_absence(
             continue
 
         batches = _loads(row["batches_seen"], [])
-        if batch_id not in batches:
-            batches.append(batch_id)
-        consecutive = int(row["consecutive_missing"] or 0) + 1
         status = row["status"]
+        consecutive = int(row["consecutive_missing"] or 0)
+
+        if batch_id in batches:
+            # 同一批次内重试：只推进检查时间，不计数
+            conn.execute(
+                "UPDATE field_absence SET last_checked_at = ? WHERE video_id = ? AND field = ?",
+                (checked_at, video_id, field),
+            )
+            continue
+
+        batches.append(batch_id)
+        consecutive += 1
 
         if status != UNSUPPORTED and consecutive >= MIN_CONSECUTIVE_MISSING and len(batches) >= MIN_DISTINCT_BATCHES:
             status = UNSUPPORTED

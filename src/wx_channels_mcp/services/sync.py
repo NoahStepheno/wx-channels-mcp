@@ -128,6 +128,8 @@ def _handle_posts(posts, summary, conn, dry_run, moment, fetched_at, parser_vers
             "on_time": bucket.on_time,
             "snapshot_late": bucket.late,
             "duration_sec": video.duration_sec,
+            "keep_rate_3s": None,
+            "pending_unit_check": 1 if metrics.get("fast_flip_rate") is not None else 0,
             "rate_unit": "ratio",
             "completeness": "full" if metrics.get("play_count") is not None else "partial",
             "field_missing": [k for k, v in metrics.items() if v is None],

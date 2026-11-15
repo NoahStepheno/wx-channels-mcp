@@ -44,6 +44,20 @@ def test_csv_has_stable_columns_and_row(conn, tmp_path):
     assert record["finish_rate"].startswith("0.0592"), "比率导出保持 0-1 小数"
 
 
+def test_review_table_columns_present(conn, tmp_path):
+    out = tmp_path / "snapshots.csv"
+    export_csv(conn, out)
+    with out.open(encoding="utf-8") as handle:
+        record = next(csv.DictReader(handle))
+
+    # 3 秒留存相关的三列必须在，空也要能解释
+    assert "fast_flip_rate" in record
+    assert "keep_rate_3s" in record
+    assert "pending_unit_check" in record
+    assert record["keep_rate_3s"] == ""
+    assert record["published_date_local"] == "2026-11-11", "按 Asia/Shanghai 的本地日期"
+
+
 def test_since_filter(conn):
     assert len(export_rows(conn, since="2026-11-01")) == 1
     assert export_rows(conn, since="2026-12-01") == []

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import csv
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 COLUMNS = (
     "video_id",
     "published_at",
+    "published_date_local",
     "snapshot_kind",
     "offset_days",
     "on_time",
@@ -16,6 +19,9 @@ COLUMNS = (
     "play_count",
     "finish_rate",
     "avg_watch_sec",
+    "fast_flip_rate",
+    "keep_rate_3s",
+    "pending_unit_check",
     "like_count",
     "comment_count",
     "share_count",
@@ -27,8 +33,11 @@ COLUMNS = (
 )
 
 _QUERY = """
-SELECT s.video_id, v.published_at, s.snapshot_kind, s.offset_days, s.on_time, s.snapshot_late,
-       s.play_count, s.finish_rate, s.avg_watch_sec, s.like_count, s.comment_count,
+SELECT s.video_id, v.published_at,
+       NULL AS published_date_local,
+       s.snapshot_kind, s.offset_days, s.on_time, s.snapshot_late,
+       s.play_count, s.finish_rate, s.avg_watch_sec, s.fast_flip_rate, s.keep_rate_3s,
+       s.pending_unit_check, s.like_count, s.comment_count,
        s.share_count, s.favorite_count, s.follower_delta, s.completeness,
        s.anchor_status, s.replay_suspected
 FROM snapshots s
@@ -46,7 +55,25 @@ def export_rows(conn: sqlite3.Connection, *, since: str | None = None) -> list[d
         where = "WHERE v.published_at >= ?"
         params = (since,)
     rows = conn.execute(_QUERY.format(where=where), params).fetchall()
-    return [dict(row) for row in rows]
+    out = []
+    for row in rows:
+        record = dict(row)
+        record["published_date_local"] = _local_date(record.get("published_at"))
+        out.append(record)
+    return out
+
+
+def _local_date(published_at: str | None) -> str | None:
+    """UTC ISO -> Asia/Shanghai 的 YYYY-MM-DD（复盘记录表按本地日期对齐）。"""
+    if not published_at:
+        return None
+    try:
+        moment = datetime.fromisoformat(published_at)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
 
 
 def export_csv(conn: sqlite3.Connection, path: str | Path, *, since: str | None = None) -> int:
