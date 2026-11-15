@@ -37,8 +37,13 @@
 - 指标：播放量、完播率、平均播放时长、点赞、评论数、转发、收藏、涨粉贡献
 - 时间窗口：发布后 **+3 天、+7 天**各一份快照
 
+### P0.5 留存曲线（可能替掉「3 秒留存」的位置）
+`get_feed_lost_rate({feedId})` → 组件 `PostChurnRate`「观众留存趋势」，formatter `(100*t).toFixed(0)+"%"`。**这是后台"留存"曲线的真实来源，与 `fastFlipRate` 是两个东西，不许混用。**
+若曲线按秒/按等分桶返回，则 3 秒留存可由累积流失反推（`keep_rate_3s = 1 - cum_churn(3s)`），该字段就能落成有出处的派生值，替掉长期挂着的 `pending_unit_check`。**探路只需回答两件事**：桶的粒度（秒/百分比/十等分）、`t` 是"流失率"还是"留存率"。答案拿到前不写实现。
+
 ### P1 流量来源构成
 推荐 / 关注 / 朋友 / 搜一搜 / 主页 / 其他。视频号来源结构与抖音差异大，缺这块只能给数字、无法归因。
+数据源已定位：`POST /statistic/feed_aggreagate_data_by_tab_type`，入参 `{feedId, startTs, endTs, interval: Day}`，返回 `dataByTabtype`（`tabTypeName` 如"主页"）。参数单位/枚举未试通，属实现期工作，**不阻塞 P0**；拿不到就记 `skipped(no_source_field)`。
 
 ### P2 粉丝
 新增关注、取关、来源（有则更好，可后置）
@@ -141,11 +146,25 @@
 ## 5.5 数据来源与口径（2026-11-15 探路后）
 
 **主路径：同源 JSON 接口**（前端自己用的，带登录 cookie）
-- `cgi-bin/mmfinderassistant-bin/post/post_list`：作品列表 + 单条指标（`readCount` / `fullPlayRate` / `avgPlayTimeSec` / `fastFlipRate` / `likeCount` / `commentCount` / `forwardCount` / `favCount` / `followCount` / `cancelFollowCount` / `yesterdayReadCount` / `createTime` / `visibleType` / `status`）
+- `cgi-bin/mmfinderassistant-bin/post/post_list`：作品列表 + 单条指标（`readCount` / `fullPlayRate` / `avgPlayTimeSec` / `fastFlipRate` / `likeCount` / `commentCount` / `forwardCount` / `favCount` / `followCount` / `cancelFollowCount` / `yesterdayReadCount` / `createTime` / `visibleType` / `status`）。入参 `{pageSize, currentPage, sort, order, startTime, endTime}`——**支持区间筛 + 排序 + 翻页**
 - `statistic/new_post_total_data`：按 tabType 的汇总
 - `statistic/fans_trend`：粉丝增/减/净增/总量
+- `statistic/feed_aggreagate_data_by_tab_type`：单条来源构成（P1）
+- `get_feed_lost_rate`：留存曲线（P0.5，见 §3）
+- `POST /statistic/download_post_data`：**「导出」= 前端把接口 JSON 在浏览器里拼表**，不是平台独立口径（见下「交叉校验」）
 
-**降级路径**：页面导出文件 → 只作「官方口径抽样校验」，不建解析管线；DOM 直读不做主路径（SPA + iframe，太脆）。
+**P0 拉取策略（写死）**：**窗口分桶在本地算，不信服务端筛。** 服务端 `startTime/endTime` 只当传输优化（少翻页），`+3/+7` 的快照归属一律用本地 `published_at` 与 `offset_days` 判定（见 §5.3）。原因：服务端区间是"发布时间落在区间内"，而快照要的是"这条作品现在距发布 N 天"——两者不是一回事，混用就会在跨窗口边界上悄悄错桶。
+
+**「导出」不是独立口径（2026-11-15 实测，推翻 v2 的假设）**：`POST /statistic/download_post_data` 返回 `errCode:0` + `data.list`，里面是**和 `post_list` 一模一样的作品对象**。也就是说前端的"下载"是本机把 JSON 拼成表，平台没有给我们另一份口径。**推论：不能用导出做交叉校验**，那等于自己跟自己比，只会稳定通过、什么也证明不了。导出能力**只保留接口、不实现文件解析**。
+
+**交叉校验改为两级锚点（写死，替掉 v2 的「导出比对」）**
+- **锚点 A（必做，Human 每批一次）**：人类本来就要手报数字（+3/+7 各报 3 个数）。用同一作品的**手抄值**当锚，接口值 vs 手抄值，比率类相对误差 ≤2%；超差不采信、记 `unit_mismatch`。这是唯一真正独立于我方代码的证据，且不额外增加人类负担。
+- **锚点 B（自动，每次同步免费做）**：跨接口内部一致性——`avgPlayTimeSec ≤ duration`；`fullPlayRate` 与 `avgPlayTimeSec/duration` 同向不悖；若 P0.5 留存曲线可用，则曲线积分 ≈ `avgPlayTimeSec`、末端 ≈ `fullPlayRate`。不满足即 `unit_mismatch`，**不猜哪个对，先停用该字段**。
+- 两条都过才算「口径可信」；只有 B 过、A 缺失 → 字段标 `pending_human_anchor`，可落库但不进 H1。
+
+**登录态就是两个 cookie（2026-11-15 实测）**：`channels.weixin.qq.com` 登录后只需 `sessionid` + `wxuin`，纯 Python `urllib` POST **不启浏览器**即可 `errCode:0` 取数。所以架构按「登录层只产出 cookie / 取数层是普通 HTTP 客户端」解耦，可单测、可 mock。**`sessionid` 是 bearer 凭证，等价于账号密码**：不落库、不写日志、不进样例 JSON、不出现在异常栈里（异常包装 `SESSION_COOKIE=<redacted>`）；`DATA_DIR` 与 `browser-profile` 与抖音**永不共用**。
+
+**降级路径**：DOM 直读不做主路径（SPA + iframe + canvas 渲染，太脆；单篇数据页 `statistic/postDetail` 直接访问 URL 不渲染，只能经菜单进，一律走 API）。
 
 **口径约定（写死）**
 1. 比率一律存 **0–1 小数**，行上带 `rate_unit="ratio"`；展示层转百分数。人类手报的百分数入表前统一换算，禁止两套单位混存。
@@ -154,6 +173,8 @@
    - 标签证据为「快划率」→ `keep_rate_3s = 1 - fast_flip_rate`，`rate_derivation="1-fastFlipRate"`
    - 标签证据为「3 秒留存」→ `keep_rate_3s = fast_flip_rate`，`rate_derivation="direct"`
    - 证据到位前：`keep_rate_3s = NULL`、`pending_unit_check=true`；**不得进 H1 对比，也不得触发 40% 告警**
+   - **证据现状（负结论，已穷尽）**：`fastFlipRate` 在两个主 bundle（`micro/content/iframe/post-card` 7.4MB、`micro/statistic/post` 5.2MB）里 **0 命中**；`3秒`/`三秒`/`秒内`/`快划`/`划走` 同样 0 命中；唯一绑定的中文标签是 `fullPlayRate ↔ 完播率`。**结论：这是接口返回、列表页不展示的字段，UI 侧不存在可指名的中文标签。** 因此 (a)(b)(c) 三条证据路径全部失效，不再重复搜 bundle/列表页；只剩单篇详情页一次机会，找不到就长期 `pending_unit_check`。
+   - **但留存口径另有出处**：后台的「观众留存趋势」走 `get_feed_lost_rate` / 组件 `PostChurnRate`，与 `fastFlipRate` 无关。`fastFlipRate` 大概率就停在"原始值存档、不解释"的位置，3 秒留存改由 §3 P0.5 的曲线提供（若曲线粒度够）。别再为了这个字段耗探路预算。
    - 算术旁证（样例：162s 视频、574 播放、均播 23.79s、完播 5.92%）：若 0.336 是留存，通过 3 秒的 193 人需平均看 64.8s（占时长 40%）且其中 17.6% 看完；若是快划率，通过 3 秒的 381 人平均 34.3s、8.9% 看完——后者更符合 162s 长视频的常见形态。**旁证不作数，只解释为什么卡这个字段。**
 3. `createTime` 是 Unix 秒，落库转 ISO8601 + 保留原值；时区按 `Asia/Shanghai`。
 
@@ -196,7 +217,7 @@
 
 ## 7. 探路阻塞项（必须先由 Human 在真号确认，否则写了也是猜）
 
-1. **导出**：后台有没有导出？粒度到不到单条作品？→ 登录页文案提到"下载作品的详细数据"，**存在可能性高，粒度待进后台确认**。能到单条或可筛区间 → 架构改为「点导出 → 解析文件」，DOM 直读降为兜底
+1. **导出**（**已结案，2026-11-15 实测**）：后台有"下载"按钮，但走 `POST /statistic/download_post_data` 返回的是 `post_list` 同一份 JSON，前端在本机拼表。**平台没有独立口径的导出文件**，因此不采信为交叉校验来源，只保留接口能力、不做文件解析。架构维持「API 直连」，不再考虑「点导出 → 解析文件」
 2. **登录形态**（硬阻塞）：**已确认＝扫码（Playwright 可做）**，2026-11-15 小满实测 `channels.weixin.qq.com/login.html` 内嵌 `open.weixin.qq.com/connect/qrconnect?...&login_type=jssdk` 标准扫码 iframe（208×208）。止损线第 2 条不触发，采集器方案成立。仍需 Human 扫码一次以建立独立 profile
 3. **可读页清单**：数据助手有哪些页；哪些指标页面直出、哪些要点进二级页；完播率是否随统计周期变
 4. **账号主体**：与抖音是否同一人运营、是否已认证（影响可见数据范围）
@@ -206,12 +227,13 @@
 
 ## 8. 验收标准（回声跑，结果贴回 MR）
 
-> **验收基线 v3（冻结）**：以本文件 `acceptance-v3` tag 为准。issue 作承载与讨论，不构成基线；任何验收标准变更必须升版本并在本节写 changelog。
+> **验收基线 v4（冻结）**：以本文件 `acceptance-v4` tag 为准。issue 作承载与讨论，不构成基线；任何验收标准变更必须升版本并在本节写 changelog。
 >
 > **changelog**
 > - v1（`acceptance-v1`，1204b20）：12 条基础验收
 > - v2（2026-11-15）：+2 条。原因：探路发现真实数据源是同源 JSON 接口而非页面，必须增加「API 值 vs UI/导出抽样交叉校验」与「脱敏检查」，否则接口字段单位或语义漂移会静默污染复盘
 > - v3（2026-11-15）：把「口径证据」从"必须 UI 截图"放宽为「UI 截图 / 前端 bundle 标签映射 / 页面 DOM 可见文本，三者任一，须可指名来源」。原因：数据页是 canvas 渲染、`innerText` 为空，截图路径不稳，Human 也不该被当成唯一取证工具；同时要求原始值不改名、派生值单列
+> - v4（2026-11-15）：①`fastFlipRate` 口径调查结案为**负结论**（两主 bundle 0 命中），不再要求取证，改为验收「原始值存档 + `keep_rate_3s` 为 NULL + `pending_unit_check` 为 true」；②新增 P0.5 留存曲线（`get_feed_lost_rate`）与 P1 来源接口（`feed_aggreagate_data_by_tab_type`）的定位，二者**不阻塞 P0**；③新增「窗口分桶必须在本地算，不信服务端筛」验收项；④**导出被证伪为独立口径**（`download_post_data` 返回的仍是 `post_list` 同一份 JSON，前端本机拼表），v2 的「导出交叉校验」替换为两级锚点：A＝Human 手报值（≤2%）＋ B＝跨接口内部一致性；导出能力只保留接口、不实现解析；⑤登记实测事实「登录态只需 `sessionid`+`wxuin`，纯 HTTP 可取数」，并把 `sessionid` 定为 bearer 凭证、禁落库禁日志
 
 - [ ] 探路产出：页面清单 + 1 条真实样例 JSON + 截图（不写采集器先）
 - [ ] `sync` 能落盘作品列表，`published_at` 与页面一致（时间精度、时区都要标）
@@ -221,14 +243,18 @@
 - [ ] 遇验证/风控：`rate_limited`/`cooldown_until` 可读，不抛异常，不重试轰炸
 - [ ] `unsupported` 与 `parse_failed` 不会出现在同一次抓取
 - [ ] 缺字段时 `field_missing` 有内容；补数时 `enriched_fields` 记录字段级时间
-- [ ] 导出 CSV 能被回声直接映射进 `reviews/2026-11-15_记录表.csv`（列对得上）
+- [ ] `wx-channels-mcp export` 产出的 CSV 能被回声直接映射进 `reviews/2026-11-15_记录表.csv`（列对得上）——**导出指的是本工具的 CSV 输出，与平台"下载"无关**
 - [ ] 不返回 cookie/header，不采集头像/主页链接/user_id
 - [ ] 每个工具的入参/出参与第 6 节一致（字段名不改，除非先改 spec）
 - [ ] `field_absence` 表能查到计数与批次列表；连续 3 次跨 2 批次才升级 `unsupported`；读到一次后计数归零
-- [ ] **交叉校验**：同一作品同一天，接口值与页面显示（或导出文件）逐项比对，比率类相对误差 ≤ 2%；超差不采信并记 `unit_mismatch`
+- [ ] **交叉校验（v4 两级）**：锚点 A——至少 1 条作品接口值 vs Human 手报值，比率类相对误差 ≤2%，超差记 `unit_mismatch`；锚点 B——`avgPlayTimeSec ≤ duration`、`fullPlayRate` 与均播/时长不悖，任一不满足即停用该字段
+- [ ] **导出不得被当作独立口径**：代码里不存在"读平台导出文件做校验"的路径；若有人加，验收直接打回
 - [ ] **脱敏**：样例与落库行不含 cookie / `uin` / token / 头像 / 主页链接 / user_id
 - [ ] **比率单位**：库内一律 0–1 小数且带 `rate_unit`；展示层百分数换算正确（`0.0592` → `5.9%`）
-- [ ] **`fastFlipRate` 口径证据**：以下任一即可 ——（a）UI 原文截图，（b）前端 bundle 中该字段与中文标签的映射（如 `fastFlipRate:"快划率"`），（c）页面上下文 DOM 的可见文本。三者须能指名来源（URL/文件/时间）。未核实前 `keep_rate_3s=NULL`、`pending_unit_check=true`，不得进 H1 对比
+- [ ] **`fastFlipRate` 处理（v4 改判）**：不再要求标签证据（两主 bundle 0 命中，已负结论结案）。验收改为——原始值 `fast_flip_rate` 与接口值逐位一致；`keep_rate_3s` 为 NULL；`pending_unit_check` 为 true；且**没有**任何代码路径把它喂进 H1 对比或 40% 告警
+- [ ] **窗口分桶在本地**：给 `post_list` 带 `startTime/endTime` 与不带，同一批作品算出的 `snapshot_kind` 必须完全一致；服务端筛只影响翻页次数
+- [ ] **P0 不依赖 P1/P0.5**：`feed_aggreagate` / `get_feed_lost_rate` 全失败时，`sync` 仍能完整落 P0 的作品与 +3/+7 快照，缺项记 `skipped(no_source_field)`
+- [ ] **留存曲线粒度已查明**（P0.5）：能说出桶的单位与 `t` 的语义，或明确记为"粒度不足、不可反推 3 秒留存"
 
 ## 9. 里程碑
 
