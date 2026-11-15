@@ -9,6 +9,7 @@ from pathlib import Path
 
 from wx_channels_mcp.config import DEFAULT_LOOKBACK_DAYS, DEFAULT_PAGE_SIZE, PAGE_SIZE_MAX
 from wx_channels_mcp.fetch.client import WxApi
+from wx_channels_mcp.services.export import export_csv
 from wx_channels_mcp.services.sync import sync
 from wx_channels_mcp.storage.db import connect
 
@@ -39,6 +40,13 @@ def _cmd_sync(args) -> int:
     return 0 if summary.status == "ok" else 2
 
 
+def _cmd_export(args) -> int:
+    conn = connect(args.db)
+    rows = export_csv(conn, args.out, since=args.since)
+    print(json.dumps({"status": "ok", "path": args.out, "rows": rows}, ensure_ascii=False))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wx-channels-mcp")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -51,6 +59,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--cookies", default=DEFAULT_COOKIES_PATH, help="cookie JSON（name/value 列表或字典）")
     p_sync.add_argument("--db", default=DEFAULT_DB_PATH)
     p_sync.set_defaults(func=_cmd_sync)
+
+    p_export = sub.add_parser("export", help="导出本地快照 CSV（与平台下载无关）")
+    p_export.add_argument("--out", default="data/snapshots.csv")
+    p_export.add_argument("--since", default=None, help="ISO 日期，按发布时间过滤")
+    p_export.add_argument("--db", default=DEFAULT_DB_PATH)
+    p_export.set_defaults(func=_cmd_export)
     return parser
 
 
