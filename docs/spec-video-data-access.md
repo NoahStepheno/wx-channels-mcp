@@ -138,6 +138,24 @@
 
 升级规则：`consecutive_missing ≥ 3` 且 `len(batches_seen) ≥ 2` → `status=unsupported`，同时该快照的 `field_missing` 保留该字段、`reason` 走 `unsupported`（互斥优先级在上表之后）。
 
+## 5.5 数据来源与口径（2026-11-15 探路后）
+
+**主路径：同源 JSON 接口**（前端自己用的，带登录 cookie）
+- `cgi-bin/mmfinderassistant-bin/post/post_list`：作品列表 + 单条指标（`readCount` / `fullPlayRate` / `avgPlayTimeSec` / `fastFlipRate` / `likeCount` / `commentCount` / `forwardCount` / `favCount` / `followCount` / `cancelFollowCount` / `yesterdayReadCount` / `createTime` / `visibleType` / `status`）
+- `statistic/new_post_total_data`：按 tabType 的汇总
+- `statistic/fans_trend`：粉丝增/减/净增/总量
+
+**降级路径**：页面导出文件 → 只作「官方口径抽样校验」，不建解析管线；DOM 直读不做主路径（SPA + iframe，太脆）。
+
+**口径约定（写死）**
+1. 比率一律存 **0–1 小数**，行上带 `rate_unit="ratio"`；展示层转百分数。人类手报的百分数入表前统一换算，禁止两套单位混存。
+2. `fastFlipRate` 的字面是「快速划走率」，**未确认它是不是页面上的「3 秒留存」**。落库前必须用 UI 原文核对：若 UI 显示 33.6% 标为「3 秒留存」则直接取用；若 UI 标「快划率」，则 `keep_rate_3s = 1 - fastFlipRate`。**未核对前该字段标 `pending_unit_check`，不得进入 H1 对比。**
+3. `createTime` 是 Unix 秒，落库转 ISO8601 + 保留原值；时区按 `Asia/Shanghai`。
+
+**风险登记**
+- 同源接口**未公开、无文档**，随时可能改版/加签名参数。缓解：`parser_version` 记录、字段缺失走 `parse_failed` 而非静默 0、每作品每日最多 1 次调用。
+- 若导出存在且粒度到单条 → 仍以 API 为主，导出仅用于交叉校验（不做采集实现）。
+
 ## 6. 接口（名字、入参出参先固定；实现细节随探路调整）
 
 命名跟抖音侧对齐：MCP tool 用 `<platform>_browser_<动作>`，CLI 用子命令。
@@ -183,7 +201,11 @@
 
 ## 8. 验收标准（回声跑，结果贴回 MR）
 
-> **验收基线 v1（冻结）**：以本文件 `acceptance-v1` tag 的版本为准。issue 作承载与讨论，不构成基线；任何验收标准变更必须升版本（v1→v2）并在本节写 changelog 说明为什么改。这样存在目的：测试与实现对齐的是**冻结版本**，不会因为 issue 正文被随手编辑而返工。
+> **验收基线 v2（冻结）**：以本文件 `acceptance-v2` tag 为准。issue 作承载与讨论，不构成基线；任何验收标准变更必须升版本并在本节写 changelog。
+>
+> **changelog**
+> - v1（`acceptance-v1`，1204b20）：12 条基础验收
+> - v2（2026-11-15）：+2 条。原因：探路发现真实数据源是同源 JSON 接口而非页面，必须增加「API 值 vs UI/导出抽样交叉校验」与「脱敏检查」，否则接口字段单位或语义漂移会静默污染复盘
 
 - [ ] 探路产出：页面清单 + 1 条真实样例 JSON + 截图（不写采集器先）
 - [ ] `sync` 能落盘作品列表，`published_at` 与页面一致（时间精度、时区都要标）
@@ -197,6 +219,10 @@
 - [ ] 不返回 cookie/header，不采集头像/主页链接/user_id
 - [ ] 每个工具的入参/出参与第 6 节一致（字段名不改，除非先改 spec）
 - [ ] `field_absence` 表能查到计数与批次列表；连续 3 次跨 2 批次才升级 `unsupported`；读到一次后计数归零
+- [ ] **交叉校验**：同一作品同一天，接口值与页面显示（或导出文件）逐项比对，比率类相对误差 ≤ 2%；超差不采信并记 `unit_mismatch`
+- [ ] **脱敏**：样例与落库行不含 cookie / `uin` / token / 头像 / 主页链接 / user_id
+- [ ] **比率单位**：库内一律 0–1 小数且带 `rate_unit`；展示层百分数换算正确（`0.0592` → `5.9%`）
+- [ ] **`fastFlipRate` 口径**：附 UI 原文截图证明它是「3 秒留存」还是「快划率」；未核实的字段标 `pending_unit_check`，不得进 H1 对比
 
 ## 9. 里程碑
 

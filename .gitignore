@@ -1,0 +1,13 @@
+# 本地环境与产物，一律不入库
+.botharness/
+data/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.log
+.DS_Store
+# 探路原始产物（脱敏后另存 docs/probe-2026-11-15/）
+probe-out/
