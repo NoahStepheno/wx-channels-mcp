@@ -1,6 +1,6 @@
 """快照窗口分桶。
 
-对齐验收基线 acceptance-v1：docs/spec-video-data-access.md §5.3（快照规则）与
+对齐验收基线 acceptance-v4：docs/spec-video-data-access.md §5.3（快照规则）与
 §7.2（时间精度），需求见 issue #1。
 
 规则摘要：

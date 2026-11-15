@@ -37,6 +37,10 @@ CREATE TABLE IF NOT EXISTS snapshots (
     completeness    TEXT NOT NULL DEFAULT 'partial',  -- full | partial
     field_missing   TEXT NOT NULL DEFAULT '[]',
     enriched_fields TEXT NOT NULL DEFAULT '{}',
+    anchor_status        TEXT NOT NULL DEFAULT 'unverified',
+    anchor_unverified    INTEGER NOT NULL DEFAULT 1,
+    replay_suspected     INTEGER NOT NULL DEFAULT 0,
+    unit_mismatch_fields TEXT NOT NULL DEFAULT '[]',
     parser_version  TEXT NOT NULL,
     PRIMARY KEY (video_id, snapshot_kind)
 );
