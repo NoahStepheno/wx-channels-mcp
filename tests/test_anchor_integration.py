@@ -10,7 +10,11 @@ import sqlite3
 
 import pytest
 
-from wx_channels_mcp.rules.baseline import is_baseline_eligible, offsets_comparable
+from wx_channels_mcp.rules.baseline import (
+    is_baseline_eligible,
+    is_compare_eligible,
+    offsets_comparable,
+)
 from wx_channels_mcp.storage.db import init_db
 from wx_channels_mcp.storage.snapshots import freeze_snapshot, get_snapshot
 
@@ -78,14 +82,16 @@ def test_unit_mismatch_keeps_row_but_flags_fields(conn):
     assert is_baseline_eligible(stored) is False
 
 
-def test_replay_suspected_passes_anchor_but_blocked_from_baseline(conn):
+def test_replay_suspected_enters_baseline_but_not_compare(conn):
+    # 重播是结果不是误差：进基准线可以，进 A/C 对比不行
     freeze_snapshot(conn, _row(avg_watch_sec=75.0, duration_sec=60.0))
     stored = get_snapshot(conn, "export/vid-1", "d3")
 
     assert stored["anchor_status"] == "replay_suspected"
     assert stored["anchor_unverified"] == 0
     assert stored["replay_suspected"] == 1
-    assert is_baseline_eligible(stored) is False, "含重播口径不能进 H1"
+    assert is_baseline_eligible(stored) is True, "重播样本是好钩子的证据，不能整体踢出基准线"
+    assert is_compare_eligible(stored) is False, "重播量不同，留存类指标不可比"
 
 
 def test_late_snapshot_never_enters_baseline(conn):
@@ -94,6 +100,29 @@ def test_late_snapshot_never_enters_baseline(conn):
 
     assert stored["snapshot_late"] == 1
     assert is_baseline_eligible(stored) is False
+
+
+def test_anchor_keeps_evidence_and_checked_at(conn):
+    freeze_snapshot(conn, _row(avg_watch_sec=60000.0, duration_sec=60.0))
+    stored = get_snapshot(conn, "export/vid-1", "d3")
+
+    assert stored["anchor_checked_at"] == "2026-11-12T10:00:00+00:00"
+    evidence = stored["anchor_evidence"]
+    assert evidence["avg_watch_sec"] == 60000.0
+    assert evidence["duration_sec"] == 60.0
+    assert "unit" in evidence["reason"] or "单位" in evidence["reason"]
+
+
+def test_anchor_upgrade_records_new_checked_at(conn):
+    freeze_snapshot(conn, _row())
+    assert get_snapshot(conn, "export/vid-1", "d3")["anchor_status"] == "insufficient_data"
+
+    freeze_snapshot(conn, _row(duration_sec=60.0, fetched_at="2026-11-13T09:00:00+00:00"))
+    stored = get_snapshot(conn, "export/vid-1", "d3")
+
+    assert stored["anchor_status"] == "normal"
+    assert stored["anchor_checked_at"] == "2026-11-13T09:00:00+00:00"
+    assert stored["anchor_evidence"]["duration_sec"] == 60.0
 
 
 def test_anchor_upgrades_when_duration_arrives_later(conn):

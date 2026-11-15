@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS snapshots (
     anchor_unverified    INTEGER NOT NULL DEFAULT 1,
     replay_suspected     INTEGER NOT NULL DEFAULT 0,
     unit_mismatch_fields TEXT NOT NULL DEFAULT '[]',
+    anchor_checked_at    TEXT,
+    anchor_evidence      TEXT NOT NULL DEFAULT '{}',
     parser_version  TEXT NOT NULL,
     PRIMARY KEY (video_id, snapshot_kind)
 );

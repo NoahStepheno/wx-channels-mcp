@@ -48,6 +48,8 @@ _INSERT_COLUMNS = (
     "anchor_unverified",
     "replay_suspected",
     "unit_mismatch_fields",
+    "anchor_checked_at",
+    "anchor_evidence",
     "completeness",
     "field_missing",
     "enriched_fields",
@@ -85,6 +87,7 @@ def get_snapshot(conn: sqlite3.Connection, video_id: str, kind: str) -> sqlite3.
     data["field_missing"] = _loads(data.get("field_missing"), [])
     data["enriched_fields"] = _loads(data.get("enriched_fields"), {})
     data["unit_mismatch_fields"] = _loads(data.get("unit_mismatch_fields"), [])
+    data["anchor_evidence"] = _loads(data.get("anchor_evidence"), {})
     return data
 
 
@@ -97,8 +100,18 @@ def _anchor(row: dict) -> Consistency:
     )
 
 
-def _apply_anchor(values: dict, anchor: Consistency) -> None:
+def _apply_anchor(values: dict, anchor: Consistency, row: dict, checked_at: str) -> None:
     values["anchor_status"] = anchor.status
+    values["anchor_checked_at"] = checked_at
+    avg = row.get("avg_watch_sec")
+    dur = row.get("duration_sec")
+    values["anchor_evidence"] = {
+        "avg_watch_sec": avg,
+        "duration_sec": dur,
+        "finish_rate": row.get("finish_rate"),
+        "ratio": (avg / dur) if (avg and dur) else None,
+        "reason": anchor.reason,
+    }
     # 只有 A、B 都过才算"口径可信"；insufficient_data 一律未验证
     values["anchor_unverified"] = 0 if (anchor.status in ("normal", REPLAY_SUSPECTED)) else 1
     values["replay_suspected"] = 1 if anchor.status == REPLAY_SUSPECTED else 0
@@ -112,7 +125,9 @@ def freeze_snapshot(conn: sqlite3.Connection, row: dict) -> FreezeResult:
     """写入一条快照；已存在则只补空 + 推进 last_seen_at。"""
     row = dict(row)
     anchor = _anchor(row)
+    duration_sec = row.get("duration_sec")
     row.pop("duration_sec", None)
+    row["_anchor_row"] = {"duration_sec": duration_sec}
     video_id = row["video_id"]
     kind = row["snapshot_kind"]
     fetched_at = row["fetched_at"]
@@ -127,8 +142,9 @@ def freeze_snapshot(conn: sqlite3.Connection, row: dict) -> FreezeResult:
         values["enriched_fields"] = _dumps(values.get("enriched_fields") or {})
         values["on_time"] = int(bool(values.get("on_time")))
         values["snapshot_late"] = int(bool(values.get("snapshot_late")))
-        _apply_anchor(values, anchor)
+        _apply_anchor(values, anchor, {**row, "duration_sec": duration_sec}, fetched_at)
         values["unit_mismatch_fields"] = _dumps(values.get("unit_mismatch_fields") or [])
+        values["anchor_evidence"] = _dumps(values.get("anchor_evidence") or {})
         placeholders = ", ".join("?" for _ in _INSERT_COLUMNS)
         conn.execute(
             f"INSERT INTO snapshots ({', '.join(_INSERT_COLUMNS)}) VALUES ({placeholders})",
@@ -163,11 +179,13 @@ def freeze_snapshot(conn: sqlite3.Connection, row: dict) -> FreezeResult:
     # 锚点未验证时，后续拿到 duration 允许升级锚点结论（这是校验状态，不是指标值）
     if existing["anchor_unverified"] and anchor.status in ("normal", REPLAY_SUSPECTED, UNIT_MISMATCH):
         anchor_values: dict = {}
-        _apply_anchor(anchor_values, anchor)
+        _apply_anchor(anchor_values, anchor, {"duration_sec": duration_sec, **row}, fetched_at)
         updates["anchor_status"] = anchor_values["anchor_status"]
         updates["anchor_unverified"] = anchor_values["anchor_unverified"]
         updates["replay_suspected"] = anchor_values["replay_suspected"]
         updates["unit_mismatch_fields"] = _dumps(anchor_values.get("unit_mismatch_fields") or [])
+        updates["anchor_checked_at"] = anchor_values.get("anchor_checked_at")
+        updates["anchor_evidence"] = _dumps(anchor_values.get("anchor_evidence") or {})
 
     updates["last_seen_at"] = max(existing["last_seen_at"] or "", fetched_at)
 
