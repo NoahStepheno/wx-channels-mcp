@@ -11,8 +11,10 @@ from typing import Any
 from wx_channels_mcp.config import DEFAULT_LOOKBACK_DAYS, DEFAULT_PAGE_SIZE
 from wx_channels_mcp.fetch.errors import WxError
 from wx_channels_mcp.rules.window import classify_snapshot
+from wx_channels_mcp.services.absence import record_absence, record_present
 from wx_channels_mcp.services.normalize import to_metrics, to_video
 from wx_channels_mcp.storage.snapshots import freeze_snapshot
+from wx_channels_mcp.storage.videos import upsert_video
 
 MAX_PAGES = 10
 
@@ -63,6 +65,7 @@ def sync(
     """
     moment = _now(now)
     fetched_at = moment.isoformat()
+    batch_id = f"batch-{moment.strftime('%Y%m%dT%H%M%S')}Z"
     start_time = int((moment - timedelta(days=lookback_days)).timestamp())
     end_time = int(moment.timestamp())
     summary = SyncSummary(
@@ -87,7 +90,7 @@ def sync(
             break
 
         posts = ((data.get("data") or {}).get("list")) or []
-        _handle_posts(posts, summary, conn, dry_run, moment, fetched_at, parser_version)
+        _handle_posts(posts, summary, conn, dry_run, moment, fetched_at, parser_version, batch_id)
         if len(posts) < page_size:
             break
 
@@ -96,7 +99,7 @@ def sync(
     return summary
 
 
-def _handle_posts(posts, summary, conn, dry_run, moment, fetched_at, parser_version) -> None:
+def _handle_posts(posts, summary, conn, dry_run, moment, fetched_at, parser_version, batch_id) -> None:
     for post in posts:
         video = to_video(post)
         metrics = to_metrics(post)
@@ -107,7 +110,9 @@ def _handle_posts(posts, summary, conn, dry_run, moment, fetched_at, parser_vers
             continue
 
         offset_days = (moment - datetime.fromtimestamp(video.published_raw, tz=timezone.utc)).total_seconds() / 86400
-        bucket = classify_snapshot(offset_days, precision="minute")
+        # 首次接入且已过 +7（含 +3 窗口早已过去） -> backfill，不参与 +3/+7 对比
+        first_seen = not dry_run and conn is not None and upsert_video(conn, video, seen_at=fetched_at)
+        bucket = classify_snapshot(offset_days, precision="minute", first_seen=bool(first_seen))
 
         if bucket.kind is None:
             summary.skipped.append(
@@ -145,6 +150,12 @@ def _handle_posts(posts, summary, conn, dry_run, moment, fetched_at, parser_vers
 
         result = freeze_snapshot(conn, row)
         stored = _stored_anchor(conn, video.video_id, bucket.kind)
+        missing = row["field_missing"]
+        present = [field for field in metrics if field not in missing]
+        if missing:
+            record_absence(conn, video.video_id, missing, batch_id=batch_id, checked_at=fetched_at)
+        if present:
+            record_present(conn, video.video_id, present, checked_at=fetched_at)
         preview.update(
             {
                 "inserted": result.inserted,

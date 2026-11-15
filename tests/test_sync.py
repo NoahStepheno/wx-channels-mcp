@@ -129,3 +129,22 @@ def test_json_summary_written(tmp_path, conn):
     assert data["status"] == "ok"
     assert data["snapshots"][0]["snapshot_kind"] == "d3"
     assert data["dry_run"] is True
+
+
+def test_first_seen_old_post_becomes_backfill(conn):
+    # 首次接入即已过 +7：记 backfill，不参与 +3/+7 对比
+    summary = sync(FakeApi(FIXTURE_POSTS), conn, now=datetime(2026, 11, 20, 15, 0, tzinfo=timezone.utc))
+
+    assert summary.snapshots[0]["snapshot_kind"] == "backfill"
+    stored = get_snapshot(conn, FIXTURE_POSTS[0]["objectId"], "backfill")
+    assert stored["on_time"] == 0
+
+
+def test_missing_field_is_counted_across_batches(conn):
+    post = json.loads(json.dumps(FIXTURE_POSTS[0]))
+    post["favCount"] = None
+
+    sync(FakeApi([post]), conn, now=FETCH_AT)
+    rows = conn.execute("SELECT * FROM field_absence").fetchall()
+    assert [r["field"] for r in rows] == ["favorite_count"]
+    assert rows[0]["consecutive_missing"] == 1
