@@ -31,7 +31,7 @@
 
 - 独立 `DATA_DIR` + 独立 `browser-profile`，两平台永不共用目录（复用会锁互撞、覆盖抖音登录态、甚至串号）
 - 登录态与抖音分文件、分锁
-- 技术栈默认 Python（与 douyin-mcp 同栈，迁移成本最低）；若 Human 改 TS/Node，本条作废但不影响验收标准
+- 技术栈：与 douyin-mcp 同栈（Python）——Human 2026-11-15 已定
 
 ## 阻塞项（真机确认后回填 spec）
 
