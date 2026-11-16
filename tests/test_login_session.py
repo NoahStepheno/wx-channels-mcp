@@ -55,13 +55,14 @@ def test_expiry_after_rescan_still_failing_downgrades_to_parse_failed(tmp_path):
     assert next_action is None
 
 
-def test_parse_failed_stays_stable_until_next_login(tmp_path):
+def test_parse_failed_stays_stable_inside_window(tmp_path):
     state = _state(tmp_path)
     state.classify_expiry(now=NOW)
-    state.note_login(now=NOW + timedelta(minutes=20))
-    state.classify_expiry(now=NOW + timedelta(minutes=21))
+    state.note_login(now=NOW + timedelta(minutes=1))
+    state.classify_expiry(now=NOW + timedelta(minutes=2))
 
-    reason, _ = state.classify_expiry(now=NOW + timedelta(minutes=40))
+    # 窗口内重复触发仍 parse_failed（v6：窗口外会回到 login_required，见窗口化用例）
+    reason, _ = state.classify_expiry(now=NOW + timedelta(minutes=3))
     assert reason == "parse_failed"
 
 
@@ -139,10 +140,11 @@ def test_state_machine_login_at_older_or_equal_is_login_required(tmp_path):
     assert state.classify_expiry(now=NOW)[0] == "login_required"
 
 
-def test_state_machine_login_at_newer_is_parse_failed_without_touching_state(tmp_path):
+def test_state_machine_login_at_newer_within_window_is_parse_failed_without_touching_state(tmp_path):
+    """v6：login_at 更晚**且**在 10 分钟窗口内 -> parse_failed，且不刷新时间戳。"""
     state = _write_state(
         tmp_path,
-        {"login_at": "2026-11-16T01:20:00+00:00", "last_300333_at": "2026-11-16T01:00:00+00:00"},
+        {"login_at": "2026-11-16T01:35:00+00:00", "last_300333_at": "2026-11-16T01:00:00+00:00"},
     )
 
     assert state.classify_expiry(now=NOW) == ("parse_failed", None)
@@ -248,3 +250,70 @@ def test_tmp_file_is_0600_while_being_written(tmp_path, monkeypatch):
     write_cookies(tmp_path / "cookies.json", {"sessionid": "SECRET", "wxuin": "u"})
 
     assert tmp_path_observed["mode"] == 0o600, "写入过程中临时文件就已经必须是 0600"
+
+
+# --- spec v6：窗口化判定（RECENT_LOGIN_WINDOW=10min，边界取严格 <） ----------------
+
+
+def test_recent_login_then_failure_within_2min_is_parse_failed(tmp_path):
+    state = _state(tmp_path)
+    state.classify_expiry(now=NOW)
+    state.note_login(now=NOW + timedelta(minutes=1))
+
+    reason, next_action = state.classify_expiry(now=NOW + timedelta(minutes=3))
+
+    assert reason == "parse_failed"
+    assert next_action is None
+
+
+def test_legal_expiry_9h_after_login_is_login_required_and_advances_timestamp(tmp_path):
+    """今天 21:00 的真实场景：11:53 登录、9.2 小时后过期，是真过期，不是 parser 问题。"""
+    state = _state(tmp_path)
+    state.classify_expiry(now=NOW)
+    state.note_login(now=NOW)
+    later = NOW + timedelta(hours=9, minutes=12)
+
+    reason, _ = state.classify_expiry(now=later)
+
+    assert reason == "login_required"
+    assert state.last_300333_at() == later.isoformat()
+
+
+def test_exactly_600s_counts_as_login_required(tmp_path):
+    """边界取严格 <：正好 600s 拿不准，走向可恢复的那边。"""
+    state = _state(tmp_path)
+    state.classify_expiry(now=NOW)
+    state.note_login(now=NOW)
+
+    reason, _ = state.classify_expiry(now=NOW + timedelta(seconds=600))
+
+    assert reason == "login_required"
+
+
+def test_599s_is_still_parse_failed(tmp_path):
+    state = _state(tmp_path)
+    state.classify_expiry(now=NOW)
+    state.note_login(now=NOW + timedelta(minutes=1))
+
+    assert state.classify_expiry(now=NOW + timedelta(minutes=1, seconds=599))[0] == "parse_failed"
+
+
+def test_clock_skew_before_login_is_parse_failed_with_original_delta(tmp_path):
+    state = _state(tmp_path)
+    state.classify_expiry(now=NOW)
+    state.note_login(now=NOW + timedelta(hours=1))
+
+    reason, _ = state.classify_expiry(now=NOW)  # 时钟回退
+
+    assert reason == "parse_failed"
+    assert state.last_note is not None
+    assert "-3600" in state.last_note
+    assert "系统时间早于 login_at" in state.last_note
+
+
+def test_window_never_touches_login_at(tmp_path):
+    state = _state(tmp_path)
+    state.note_login(now=NOW)
+    state.classify_expiry(now=NOW + timedelta(hours=2))
+
+    assert state.login_at() == NOW.isoformat()

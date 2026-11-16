@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DEFAULT_LOGIN_STATE_PATH = "data/login_state.json"
+# "重新扫码后紧接着仍失败"的窗口（spec v6）。越短越安全：
+# 误判 login_required 只是多扫一次且必然可恢复；误判 parse_failed 会把人引去查 parser。
+RECENT_LOGIN_WINDOW = timedelta(minutes=10)
 DEFAULT_COOKIES_PATH = ".botharness/cookies.json"
 COOKIE_FILE_MODE = 0o600
 REQUIRED_COOKIES = ("sessionid", "wxuin")
@@ -54,13 +57,18 @@ class SessionState:
     判定只看两个显式时间戳（回声钉死，不用文件 mtime、不用重试次数）：
     - `login_at`：login 子命令成功时写入；
     - `last_300333_at`：每次遇到 300333 时写入。
-    规则：`login_at` 为空或 `login_at <= last_300333_at` -> login_required；
-          `login_at > last_300333_at` -> parse_failed（新登录过仍失败，不是登录问题）。
+
+    spec v6 规则（窗口化，`RECENT_LOGIN_WINDOW=10min`）：
+    - `300333` 且 `login_at > last_300333_at` 且 `now - login_at < 10min` -> parse_failed
+      （刚扫完还失败，那就不是登录问题）
+    - 其余全部 -> login_required，并刷新 `last_300333_at`（绝不改 `login_at`）
+    - `now < login_at`（时钟回退/文件被改）-> parse_failed，并把原始差值放进 `note`，不静默
     mtime 会因拷贝/解压/`cp -p` 漂移，所以显式字段才是事实。
     """
 
     def __init__(self, path: str | Path = DEFAULT_LOGIN_STATE_PATH) -> None:
         self._path = Path(path)
+        self.last_note: str | None = None
 
     # --- 状态读写 -------------------------------------------------------
 
@@ -95,14 +103,29 @@ class SessionState:
         self._save(data)
 
     def classify_expiry(self, *, now: datetime | None = None) -> tuple[str, str | None]:
-        """收到 300333 时的判定：返回 (reason, next_action)。"""
+        """收到 300333 时的判定：返回 (reason, next_action)；`last_note` 带排查线索。"""
         moment = (now or _utcnow()).astimezone(timezone.utc)
         data = self._load()
         login_at = _parse(data.get("login_at"))
         last_333 = _parse(data.get("last_300333_at"))
+        self.last_note = None
 
-        if login_at is not None and last_333 is not None and login_at > last_333:
-            # 新登录之后仍然 300333：不是登录问题，降级为解析问题（不再刷新时间戳，保持稳定）
+        if login_at is not None and login_at > moment:
+            # 时钟回退或状态文件被改：不静默当成"窗口内"，把原始差值摆出来
+            delta = (moment - login_at).total_seconds()
+            self.last_note = (
+                f"系统时间早于 login_at（now={moment.isoformat()}, login_at={login_at.isoformat()}, "
+                f"差值={delta:+.0f}s）：按 parse_failed 处理，请检查本机时钟或状态文件"
+            )
+            return "parse_failed", None
+
+        if (
+            login_at is not None
+            and last_333 is not None
+            and login_at > last_333
+            and (moment - login_at) < RECENT_LOGIN_WINDOW
+        ):
+            # 刚扫完（<10min）仍 300333：不是登录问题，降级；不刷新时间戳，保持稳定
             return "parse_failed", None
 
         data["last_300333_at"] = moment.isoformat()

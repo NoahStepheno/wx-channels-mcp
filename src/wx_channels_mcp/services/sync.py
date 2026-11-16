@@ -93,6 +93,9 @@ def sync(
             summary.error = {"reason": reason, "message": str(exc), "detail": exc.detail[:200]}
             if next_action:
                 summary.error["next_action"] = next_action
+            note = getattr(session_state, "last_note", None) if session_state is not None else None
+            if note:
+                summary.error["note"] = note
             break
 
         posts = ((data.get("data") or {}).get("list")) or []
