@@ -218,8 +218,27 @@
 |---|---|---|
 | `wx-channels-mcp sync` | `--recent-limit N`（默认 20）、`--headless/--headed` | 作品列表 upsert 到 `videos`；对当天到期作品取快照，写 `snapshots` |
 | `wx-channels-mcp details` | `--video-id` 或 `--recent-limit N` | 单/多作品指标详情，写 `snapshots`（不重复取已冻结的 kind） |
-| `wx-channels-mcp login` | 无（可 `--profile <dir>`） | 开本平台独立 profile 等扫码，成功后写 `cookies.json`（0600），打印 `login_status`；P0.5，不阻塞 P0 |
+| `wx-channels-mcp login` | 无（可 `--profile <dir>`） | 开本平台独立 profile 等扫码，成功后写 `cookies.json`（0600），打印 `login_status` **+ 登录到的视频号身份**；P0.5，不阻塞 P0 |
 | `wx-channels-mcp export` | `--format csv`（默认）、`--since`、`--out` | 导出快照 CSV，列与复盘记录表对齐 |
+
+#### 6.1.1 `login` 必须回答「登进去的是哪个号」（2026-11-16 事故驱动）
+
+事实依据：2026-11-16 Human 重扫，`login_status` 为 ok、`cookies.json` 0600、`sessionid`+`wxuin` 齐全，但登进去的是**另一个视频号**（`视频28`、最新作品 `2021-06-22`、关注 0、页面仍挂「申请认证」）。该账号对 `post_list` 返回 `errCode=300002`；**连平台前端自己发的请求也是 300002**，而 11-15 那份过期 cookie 对同一接口是 `errCode:0`（574 播放 / 162s）。所以 300002 ≠ 登录过期（那是 300333），也 ≠ 入参问题，而是**号不对**。只打印 `login_status: ok` 会让这种事故显示成"万事大吉"。
+
+出参（JSON，stdout）：
+
+```
+{"login_status": "ok", "cookies_path": "...", "identity": {"nickname": "...", "finder_id": "...", "video_count": 1}, "identity_unverified": false}
+```
+
+- `identity` 三字段至少要有 `nickname` 与 `video_count`；`finder_id` 取得到就带
+- 身份查询失败**不得**让登录失败：仍返回 `login_status: ok`，但 `identity: null` + `identity_unverified: true`，并在 `message` 里写清"未能确认登录身份"
+- 身份查询**不得**新增一次独立登录/Cookie 导出，只读一次（页面文本或 `helper_userinfo` 一类只读接口），失败即降级
+- 反例（不通过）：只输出 `login_status: ok`，人无法判断扫的是哪个号
+
+`--profile` 仍可覆盖 profile 目录；cookie 路径沿用 6.1 的默认值（相对 CWD，必须在仓库根跑）。
+
+**P1（不进本次验收）**：`--expect-finder-id <id>`，与 `identity.finder_id` 不符时返回 `login_status: identity_mismatch` 且 exit 非 0——把"扫错号"从人工比对变成工具拦截。要不要做由 Human 定。
 
 ### 6.2 MCP tools（如果没有 MCP 通道，CLI 先跑通，tool 后补）
 
