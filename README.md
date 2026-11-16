@@ -38,7 +38,7 @@ wx-channels-mcp export --out data/snapshots.csv
 
 **`sync --dry-run` 不是绝对只读**：遇到 `300333` 时它仍会刷新 `data/login_state.json` 的 `last_300333_at`（诊断时间线，不是内容数据），`login_at` 不动。排查时别以为 dry-run 什么文件都不碰。
 
-**登录成功不等于号对。** `login` 会输出 `identity`（`nickname` + `video_count`，取得到再带 `finder_id`）和 `probe`（`ok`/`denied`/`error`）：`video_count` **只**取自 `post_list.totalCount`，页面文本只给昵称（页面里有「视频号ID: …」和「关注者0」，从文本猜视频数会把 0 作品的号报成 28）。`probe: denied` 表示该账号对该接口无权限（300002），基本就是扫错号；身份拿不到时 `identity: null` + `identity_unverified: true`，登录本身仍算成功。跑 `sync` 前先看 `identity.video_count` 是不是你要复盘的那个号。两个错误码含义不同，别混：
+**登录成功不等于号对。** `login` 会输出 `identity`（`nickname` + `video_count`，取得到再带 `finder_id`）和**顶层** `probe`（`ok`/`denied`/`error`，`identity` 里不复制）：`video_count` **只**取自 `post_list.totalCount`，页面文本只给昵称（页面里有「视频号ID: …」和「关注者0」，从文本猜视频数会把 0 作品的号报成 28）。`probe: denied` 表示该账号对该接口无权限（300002），基本就是扫错号；身份拿不到时 `identity: null` + `identity_unverified: true`，登录本身仍算成功。跑 `sync` 前先看 `identity.video_count` 是不是你要复盘的那个号。两个错误码含义不同，别混：
 - `300333` → `login_required`：会话过期，重扫即可；
 - `300002` → `parse_failed`：会话有效但**该账号没有这个接口的权限**（号不对），重扫前先确认扫的是哪个视频号。
 

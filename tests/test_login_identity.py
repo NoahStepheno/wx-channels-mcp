@@ -113,7 +113,8 @@ def test_login_reports_identity_when_parsed(tmp_path):
     result = _run(tmp_path, RIGHT_ACCOUNT_TEXT, probe=("ok", 1))
 
     assert result["login_status"] == "ok"
-    assert result["identity"] == {"nickname": "小满的视频号", "video_count": 1, "probe": "ok"}
+    assert result["identity"] == {"nickname": "小满的视频号", "video_count": 1}
+    assert "probe" not in result["identity"], "identity 内不得复制 probe（v6.2）"
     assert result["identity_unverified"] is False
     assert result["probe"] == "ok"
     assert "identity" in json.dumps(result)
@@ -140,12 +141,13 @@ def test_login_denied_probe_says_wrong_account(tmp_path):
 
 
 def test_identity_failure_does_not_fail_login(tmp_path):
+    """昵称解析不出但探测正常：probe=ok 保留，identity=null（v6.2 机械定义）。"""
     result = _run(tmp_path, "登录 微信扫码", probe=("ok", 1))
 
     assert result["login_status"] == "ok"
     assert result["identity"] is None
     assert result["identity_unverified"] is True
-    assert result["probe"] == "error"
+    assert result["probe"] == "ok"
     assert "未能确认登录身份" in result["message"]
 
 
@@ -162,6 +164,33 @@ def test_identity_failure_message_when_no_page_text(tmp_path):
 
     assert result["identity_unverified"] is True
     assert result["cookies_path"].endswith("cookies.json")
+
+
+def test_probe_is_top_level_only(tmp_path):
+    """v6.2 反例④：probe 只在 identity 里出现即不通过。"""
+    result = _run(tmp_path, RIGHT_ACCOUNT_TEXT)
+
+    assert result["probe"] == "ok"
+    assert set(result["identity"]) == {"nickname", "video_count"}
+
+
+def test_denied_standard_shape(tmp_path):
+    """v6.2：扫错号的标准输出形态（预期结果，不是失败）。"""
+    result = _run(tmp_path, "", probe=("denied", None))
+
+    assert result["login_status"] == "ok"
+    assert result["probe"] == "denied"
+    assert result["identity"] is None
+    assert result["identity_unverified"] is True
+    assert "扫错了微信号" in result["message"]
+
+
+def test_identity_never_contains_null_placeholders(tmp_path):
+    """v6.2 反例⑤：不许 nickname: null 这类占位。"""
+    result = _run(tmp_path, "视频号 · 助手 | 1 | 用户0284223142 | 视频28", probe=("ok", 1))
+
+    assert result["identity"] == {"nickname": "用户0284223142", "video_count": 1}
+    assert all(value is not None for value in result["identity"].values())
 
 
 def test_login_result_never_leaks_cookie_values(tmp_path):

@@ -50,6 +50,32 @@ class BrowserSession(Protocol):
 SessionFactory = Callable[[str | Path], BrowserSession]
 
 
+PAGE_TEXT_WAIT_SECONDS = 10.0
+LOGIN_HOST = "channels.weixin.qq.com"
+
+
+def select_login_page(pages) -> object | None:
+    """从 context.pages 里挑本平台那个页；没有就退回第一页。"""
+    pages = list(pages or [])
+    for page in pages:
+        try:
+            url = page.url or ""
+        except Exception:
+            continue
+        if LOGIN_HOST in url:
+            return page
+    return pages[0] if pages else None
+
+
+def _inner_text(page) -> str:
+    if page is None:
+        return ""
+    try:
+        return page.inner_text("body", timeout=5_000) or ""
+    except Exception:  # 还没渲染出来：交给上层重试/降级
+        return ""
+
+
 class PlaywrightSession:
     """真实浏览器会话：复用本平台自己的 profile，不与其他项目共用。"""
 
@@ -74,13 +100,14 @@ class PlaywrightSession:
         return self._context.cookies()
 
     def page_text(self) -> str:
-        page = self._context.pages[0] if self._context.pages else None
-        if page is None:
-            return ""
-        try:
-            return page.inner_text("body", timeout=5_000) or ""
-        except Exception:  # 页面还没渲染出来：身份降级，不影响登录
-            return ""
+        """按 host 选登录页（不盲取 pages[0]），最多等 ~10s 让 SPA 渲染出文本。"""
+        deadline = time.monotonic() + PAGE_TEXT_WAIT_SECONDS
+        while True:
+            page = select_login_page(self._context.pages)
+            text = _inner_text(page)
+            if text or time.monotonic() >= deadline:
+                return text
+            time.sleep(0.5)
 
     def close(self) -> None:
         self._context.close()
@@ -175,8 +202,9 @@ def resolve_identity(
     base = parse_identity(page_text)
     status, count = probe(cookies)
     if base is None or status != PROBE_OK or count is None:
-        return None, status if base is not None else PROBE_ERROR
-    return {**base, "video_count": count, "probe": status}, status
+        # probe 是登录动作的结论，独立于昵称是否解析出来（v6.2）
+        return None, status
+    return {**base, "video_count": count}, status
 
 
 def login(

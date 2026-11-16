@@ -168,3 +168,18 @@ def test_default_state_path_is_never_the_repo_data_dir(tmp_path):
 
     after = real_state.read_text(encoding="utf-8") if real_state.exists() else None
     assert after == before, "测试不许改动仓库的 data/login_state.json"
+
+
+def test_select_login_page_prefers_channels_host():
+    """v6.2：按 host 选页，不盲取 pages[0]（登录 profile 里可能有 about:blank）。"""
+    from wx_channels_mcp.auth.login import select_login_page
+
+    class Page:
+        def __init__(self, url):
+            self.url = url
+
+    blank = Page("about:blank")
+    channels = Page("https://channels.weixin.qq.com/platform")
+    assert select_login_page([blank, channels]) is channels
+    assert select_login_page([blank]) is blank
+    assert select_login_page([]) is None
