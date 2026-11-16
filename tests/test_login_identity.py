@@ -23,17 +23,30 @@ REAL_ACCIDENT_TEXT = (
     "2021年6月22日 | 如何让更多的人看到你的视频？"
 )
 # 另一段真机文本里出现过的排版（`助手 | 序号 | 昵称 |`），用于验证正则本身
-NUMBERED_LAYOUT_TEXT = "视频号 · 助手 | 1 | 小满的视频号 | 视频1 | 关注者0"
+NUMBERED_LAYOUT_TEXT = "视频号 · 助手 | 1 | 小满的视频号 | 申请认证 | 视频号ID: | 视频1 | 关注者0"
 UNPARSEABLE_TEXT = "登录 微信扫码"
-NUMBERED_LAYOUT_TEXT = "视频号 · 助手 | 1 | 小满的视频号 | 视频1 | 关注者0"
+NUMBERED_LAYOUT_TEXT = "视频号 · 助手 | 1 | 小满的视频号 | 申请认证 | 视频号ID: | 视频1 | 关注者0"
 
 
-def test_parse_identity_real_accident_text_unparsed_known_limitation():
-    """11-16 登录页（`助手 | 昵称 |`）解析不出昵称，属已知限制（spec v6.4 附注）。
+def test_parse_identity_real_accident_text_via_structural_anchor():
+    """v6.5：靠结构锚点（昵称后紧跟 `视频号ID`）认昵称，真机原文可解析。"""
+    assert parse_identity(REAL_ACCIDENT_TEXT) == {"nickname": "用户0284223142"}
 
-    本基线只认 `助手 | 序号 | 昵称 |`；将来出现第二种真机排版，先用原文进 spec 再改正则。
-    """
-    assert parse_identity(REAL_ACCIDENT_TEXT) is None
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "助手 | 私信 | 关注者0",
+        "助手 | 草稿箱 | 合集 | 直播",
+        "助手 | 创作者中心 | 数据分析",
+        "助手 | 品牌合作 | 通知",
+        "助手 | 我的视频 | 作品",
+        "助手 | Settings | 视频号ID: 视频28 | 关注者0",
+    ],
+)
+def test_menu_labels_never_become_nickname(text):
+    """回声实测漏网的 6 个菜单词：结构锚点天然排除，Settings 由辅助黑名单兜住。"""
+    assert parse_identity(text) is None
 
 
 @pytest.mark.parametrize(
@@ -155,11 +168,21 @@ def test_login_wrong_account_video_count_is_visible(tmp_path):
     注意：`probe=("ok", 3)` 是**合成**的探测结果，仅验证字段透传；
     真机事故号对 post_list 返回 300002，从未取到过 totalCount，我们并不知道它有几条作品。
     """
-    result = _run(tmp_path, REAL_ACCIDENT_TEXT, probe=("ok", 3))
+    result = _run(tmp_path, UNPARSEABLE_TEXT, probe=("ok", 3))
 
     assert result["login_status"] == "ok"
     assert result["identity"] == {"video_count": 3}
     assert "nickname" not in result["identity"]
+
+
+def test_nickname_is_display_only(tmp_path):
+    """v6.5：昵称只用于展示，禁止参与判定——status/probe 只由探测结果决定。"""
+    wrong = _run(tmp_path, REAL_ACCIDENT_TEXT, probe=("denied", None))
+    other = _run(tmp_path, "助手 | 1 | 另一个号 | 视频号ID: v2_x@finder", probe=("denied", None))
+
+    assert wrong["login_status"] == other["login_status"] == "ok"
+    assert wrong["probe"] == other["probe"] == "denied"
+    assert wrong["identity"] != other["identity"], "昵称不同只影响展示"
 
 
 def test_login_denied_probe_says_wrong_account(tmp_path):
@@ -250,9 +273,9 @@ def test_identity_is_json_serializable(text):
 @pytest.mark.parametrize(
     ("page_text", "probe", "expected_identity", "expected_probe"),
     [
-        # 11-16 真机原文：昵称解析不出（已知限制），probe 仍独立指认号对不对
-        (REAL_ACCIDENT_TEXT, ("denied", None), None, "denied"),
-        (REAL_ACCIDENT_TEXT, ("ok", 1), {"video_count": 1}, "ok"),
+        # 11-16 真机原文：锚点解析出昵称，probe 仍独立指认号对不对（昵称不参与判定）
+        (REAL_ACCIDENT_TEXT, ("denied", None), {"nickname": "用户0284223142"}, "denied"),
+        (REAL_ACCIDENT_TEXT, ("ok", 1), {"nickname": "用户0284223142", "video_count": 1}, "ok"),
         # 页面文本解析不出昵称：只剩探测结果，identity 该 null 就 null
         (UNPARSEABLE_TEXT, ("denied", None), None, "denied"),
         (UNPARSEABLE_TEXT, ("ok", 1), {"video_count": 1}, "ok"),
