@@ -18,8 +18,9 @@ import re
 from wx_channels_mcp.fetch.client import WRONG_ACCOUNT_CODE
 from wx_channels_mcp.fetch.errors import WxError
 
-# 兼容两种真实排版：`助手 | 1 | 昵称 |` 与 `助手 | 昵称 |`（11-16 事故页面是后者）
-_NICKNAME = re.compile(r"助手\s*[|｜]\s*(?:\d+\s*[|｜]\s*)?([^|｜\n]{1,40}?)\s*[|｜]")
+# 只认 11-16 之前观察到的排版 `助手 | <序号> | 昵称 |`；真机登录页结构未确认前不猜第二种，
+# 解析不出就如实返回 None（宁可少报，不许编）
+_NICKNAME = re.compile(r"助手\s*[|｜]\s*\d+\s*[|｜]\s*([^|｜\n]{1,40}?)\s*[|｜]")
 _FINDER_ID = re.compile(r"视频号ID\s*[:：]?\s*([A-Za-z0-9_@\-]{6,})")
 
 PROBE_OK = "ok"

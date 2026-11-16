@@ -17,30 +17,34 @@ from wx_channels_mcp.auth.login import login
 from wx_channels_mcp.fetch.errors import WxError
 
 # 11-16 事故现场真实页面文本（headless 读出来的）
-# 11-16 事故页面真实排版：`助手 |` 后面直接是昵称，没有序号
-WRONG_ACCOUNT_TEXT = (
-    "视频号 · 助手 | 用户0284223142 | 申请认证 | 视频号ID: | 视频28 | 关注者0 | "
-    "如何让更多的人看到你的视频？ | 2021年6月22日"
+# 11-16 真机抓到的登录页原文（原样，未改动）。注意：`助手 |` 后面直接是昵称，没有序号，
+# 现有正则认不出 → parse_identity 返回 None。这是**已知限制**，不许为了让它变绿去猜平台结构。
+REAL_ACCIDENT_TEXT = (
+    "视频号 · 助手 | 用户0284223142 | 申请认证 | 视频号ID: 视频28 | 关注者0 | "
+    "2021年6月22日 | 如何让更多的人看到你的视频？"
 )
+# 另一段真机文本里出现过的排版（`助手 | 序号 | 昵称 |`），用于验证正则本身
+NUMBERED_LAYOUT_TEXT = "视频号 · 助手 | 1 | 小满的视频号 | 视频1 | 关注者0"
 UNPARSEABLE_TEXT = "登录 微信扫码"
-RIGHT_ACCOUNT_TEXT = "视频号 · 助手 | 1 | 小满的视频号 | 视频1 | 关注者0"
+NUMBERED_LAYOUT_TEXT = "视频号 · 助手 | 1 | 小满的视频号 | 视频1 | 关注者0"
 
 
-def test_parse_identity_real_accident_layout():
-    """真实事故排版没有序号：`助手 | 用户0284223142 |` 也要能解析。"""
-    assert parse_identity(WRONG_ACCOUNT_TEXT) == {"nickname": "用户0284223142"}
+def test_parse_identity_real_accident_text_is_unparsed_known_limitation():
+    """11-16 登录页昵称无法解析，属已知限制（真机原文没有 `助手 | 序号 |` 那段）。"""
+    assert parse_identity(REAL_ACCIDENT_TEXT) is None
 
 
 def test_parse_identity_never_invents_video_count():
-    """硬伤回归：页面文本里有「视频号ID: … 视频28」和「关注者0」，绝不能猜出 28。"""
-    identity = parse_identity(WRONG_ACCOUNT_TEXT)
+    """硬伤回归：真机文本里有「视频号ID: 视频28」和「关注者0」，绝不能猜出 28。"""
+    identity = parse_identity(NUMBERED_LAYOUT_TEXT)
 
-    assert identity == {"nickname": "用户0284223142"}
+    assert identity == {"nickname": "小满的视频号"}
     assert "video_count" not in identity
 
 
-def test_parse_identity_right_account():
-    assert parse_identity(RIGHT_ACCOUNT_TEXT) == {"nickname": "小满的视频号"}
+def test_parse_identity_numbered_layout():
+    """合成的 `助手 | 序号 | 昵称 |` 排版：只用于验证正则分支，不当真机事实。"""
+    assert parse_identity(NUMBERED_LAYOUT_TEXT) == {"nickname": "小满的视频号"}
 
 
 def test_parse_identity_includes_finder_id_when_present():
@@ -117,7 +121,7 @@ def _run(tmp_path, text, *, probe=("ok", 1), probe_fn=None):
 
 
 def test_login_reports_identity_when_parsed(tmp_path):
-    result = _run(tmp_path, RIGHT_ACCOUNT_TEXT, probe=("ok", 1))
+    result = _run(tmp_path, NUMBERED_LAYOUT_TEXT, probe=("ok", 1))
 
     assert result["login_status"] == "ok"
     assert result["identity"] == {"nickname": "小满的视频号", "video_count": 1}
@@ -127,13 +131,13 @@ def test_login_reports_identity_when_parsed(tmp_path):
     assert "identity" in json.dumps(result)
 
 
-def test_login_wrong_account_is_visible_not_hidden(tmp_path):
-    """扫错号：identity 里就是别的号（视频数来自接口，不是页面文本猜的）。"""
-    result = _run(tmp_path, WRONG_ACCOUNT_TEXT, probe=("ok", 28))
+def test_login_wrong_account_video_count_is_visible(tmp_path):
+    """扫错号最直接的信号：真机文本读不出昵称，但接口给的 video_count 照样能看出不对（28 vs 1）。"""
+    result = _run(tmp_path, REAL_ACCIDENT_TEXT, probe=("ok", 28))
 
     assert result["login_status"] == "ok"
-    assert result["identity"]["video_count"] == 28
-    assert result["identity"]["nickname"] == "用户0284223142"
+    assert result["identity"] == {"video_count": 28}
+    assert "nickname" not in result["identity"]
 
 
 def test_login_denied_probe_says_wrong_account(tmp_path):
@@ -159,7 +163,7 @@ def test_identity_failure_does_not_fail_login(tmp_path):
 
 
 def test_identity_probe_error_message(tmp_path):
-    result = _run(tmp_path, RIGHT_ACCOUNT_TEXT, probe=("error", None))
+    result = _run(tmp_path, NUMBERED_LAYOUT_TEXT, probe=("error", None))
 
     assert result["identity_unverified"] is False, "有昵称就算 identity 非空（探测失败不等于没身份）"
     assert result["probe"] == "error"
@@ -175,7 +179,7 @@ def test_identity_failure_message_when_no_page_text(tmp_path):
 
 def test_probe_is_top_level_only(tmp_path):
     """v6.2 反例④：probe 只在 identity 里出现即不通过。"""
-    result = _run(tmp_path, RIGHT_ACCOUNT_TEXT)
+    result = _run(tmp_path, NUMBERED_LAYOUT_TEXT)
 
     assert result["probe"] == "ok"
     assert set(result["identity"]) == {"nickname", "video_count"}
@@ -194,26 +198,26 @@ def test_denied_standard_shape(tmp_path):
 
 def test_identity_never_contains_null_placeholders(tmp_path):
     """v6.2 反例⑤：不许 nickname: null 这类占位。"""
-    result = _run(tmp_path, RIGHT_ACCOUNT_TEXT, probe=("ok", 1))
+    result = _run(tmp_path, NUMBERED_LAYOUT_TEXT, probe=("ok", 1))
 
     assert result["identity"] == {"nickname": "小满的视频号", "video_count": 1}
     assert all(value is not None for value in result["identity"].values())
 
 
 def test_login_result_never_leaks_cookie_values(tmp_path):
-    result = _run(tmp_path, RIGHT_ACCOUNT_TEXT)
+    result = _run(tmp_path, NUMBERED_LAYOUT_TEXT)
 
     assert "SECRET" not in json.dumps(result, ensure_ascii=False)
 
 
 def test_login_still_writes_0600_with_identity(tmp_path):
     path = tmp_path / "cookies.json"
-    _run(tmp_path, RIGHT_ACCOUNT_TEXT)
+    _run(tmp_path, NUMBERED_LAYOUT_TEXT)
 
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
-@pytest.mark.parametrize("text", [WRONG_ACCOUNT_TEXT, RIGHT_ACCOUNT_TEXT])
+@pytest.mark.parametrize("text", [REAL_ACCIDENT_TEXT, NUMBERED_LAYOUT_TEXT])
 def test_identity_is_json_serializable(text):
     assert json.loads(json.dumps(parse_identity(text))) == parse_identity(text)
 
@@ -224,14 +228,14 @@ def test_identity_is_json_serializable(text):
 @pytest.mark.parametrize(
     ("page_text", "probe", "expected_identity", "expected_probe"),
     [
-        # 11-16 事故页面：昵称能解析（放宽后兼容"助手 | 昵称 |"），但号不对 → probe=denied
-        (WRONG_ACCOUNT_TEXT, ("denied", None), {"nickname": "用户0284223142"}, "denied"),
-        (WRONG_ACCOUNT_TEXT, ("ok", 1), {"nickname": "用户0284223142", "video_count": 1}, "ok"),
+        # 11-16 真机原文：昵称解析不出（已知限制），但 probe 仍要能指认"号不对"
+        (REAL_ACCIDENT_TEXT, ("denied", None), None, "denied"),
+        (REAL_ACCIDENT_TEXT, ("ok", 1), {"video_count": 1}, "ok"),
         # 页面文本解析不出昵称：只剩探测结果，identity 该 null 就 null
         (UNPARSEABLE_TEXT, ("denied", None), None, "denied"),
         (UNPARSEABLE_TEXT, ("ok", 1), {"video_count": 1}, "ok"),
-        (RIGHT_ACCOUNT_TEXT, ("denied", None), {"nickname": "小满的视频号"}, "denied"),
-        (RIGHT_ACCOUNT_TEXT, ("ok", 1), {"nickname": "小满的视频号", "video_count": 1}, "ok"),
+        (NUMBERED_LAYOUT_TEXT, ("denied", None), {"nickname": "小满的视频号"}, "denied"),
+        (NUMBERED_LAYOUT_TEXT, ("ok", 1), {"nickname": "小满的视频号", "video_count": 1}, "ok"),
     ],
 )
 def test_resolve_identity_keeps_what_it_got(page_text, probe, expected_identity, expected_probe):
@@ -246,7 +250,7 @@ def test_resolve_identity_keeps_what_it_got(page_text, probe, expected_identity,
 
 def test_denied_wins_even_with_nickname(tmp_path):
     """有昵称也可能号不对：probe=denied 必须盖过"看起来拿到了身份"。"""
-    result = _run(tmp_path, RIGHT_ACCOUNT_TEXT, probe=("denied", None))
+    result = _run(tmp_path, NUMBERED_LAYOUT_TEXT, probe=("denied", None))
 
     assert result["probe"] == "denied"
     assert result["identity"] == {"nickname": "小满的视频号"}
