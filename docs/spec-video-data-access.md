@@ -273,12 +273,13 @@
 
 ## 8. 验收标准（回声跑，结果贴回 MR）
 
-> **验收基线 v4（冻结）**：以本文件 `acceptance-v4` tag 为准。issue 作承载与讨论，不构成基线；任何验收标准变更必须升版本并在本节写 changelog。
+> **验收基线 v5（冻结，2026-11-16）**：以本文件 `acceptance-v4` tag 为准。issue 作承载与讨论，不构成基线；任何验收标准变更必须升版本并在本节写 changelog。
 >
 > **changelog**
 > - v1（`acceptance-v1`，1204b20）：12 条基础验收
 > - v2（2026-11-15）：+2 条。原因：探路发现真实数据源是同源 JSON 接口而非页面，必须增加「API 值 vs UI/导出抽样交叉校验」与「脱敏检查」，否则接口字段单位或语义漂移会静默污染复盘
 > - v3（2026-11-15）：把「口径证据」从"必须 UI 截图"放宽为「UI 截图 / 前端 bundle 标签映射 / 页面 DOM 可见文本，三者任一，须可指名来源」。原因：数据页是 canvas 渲染、`innerText` 为空，截图路径不稳，Human 也不该被当成唯一取证工具；同时要求原始值不改名、派生值单列
+> - v5（2026-11-16）：①`login` 必须报出登录到的视频号身份（`identity` + `identity_unverified`）。原因：Human 重扫后 `login_status=ok`、cookie 0600 齐全，但登进去的是另一个号（`视频28`/最新作品 `2021-06-22`/关注 0/页面挂「申请认证」），该号对 `post_list` 返回 `300002`——**平台前端自己发的请求同样 300002**，而 11-15 那份过期 cookie 对同一接口是 `errCode:0`（574 播放/162s）。只报 `login_status: ok` 会让人以为万事大吉，白等一天；②新增「`300002` 不得判 `login_required`」验收项：`300002`＝账号无该接口权限（号不对），`300333`＝会话过期。混判会把修复方向引到 header/payload 穷举（本次已实测全部无效）。出参定义见 6.1.1
 > - v4（2026-11-15）：①`fastFlipRate` 口径调查结案为**负结论**（两主 bundle 0 命中），不再要求取证，改为验收「原始值存档 + `keep_rate_3s` 为 NULL + `pending_unit_check` 为 true」；②新增 P0.5 留存曲线（`get_feed_lost_rate`）与 P1 来源接口（`feed_aggreagate_data_by_tab_type`）的定位，二者**不阻塞 P0**；③新增「窗口分桶必须在本地算，不信服务端筛」验收项；④**导出被证伪为独立口径**（`download_post_data` 返回的仍是 `post_list` 同一份 JSON，前端本机拼表），v2 的「导出交叉校验」替换为两级锚点：A＝Human 手报值（≤2%）＋ B＝跨接口内部一致性；导出能力只保留接口、不实现解析；⑤登记实测事实「登录态只需 `sessionid`+`wxuin`，纯 HTTP 可取数」，并把 `sessionid` 定为 bearer 凭证、禁落库禁日志
 
 - [ ] 探路产出：页面清单 + 1 条真实样例 JSON + 截图（不写采集器先）
@@ -301,6 +302,8 @@
 - [ ] **窗口分桶在本地**：给 `post_list` 带 `startTime/endTime` 与不带，同一批作品算出的 `snapshot_kind` 必须完全一致；服务端筛只影响翻页次数
 - [ ] **P0 不依赖 P1/P0.5**：`feed_aggreagate` / `get_feed_lost_rate` 全失败时，`sync` 仍能完整落 P0 的作品与 +3/+7 快照，缺项记 `skipped(no_source_field)`
 - [ ] **留存曲线粒度已查明**（P0.5）：能说出桶的单位与 `t` 的语义，或明确记为"粒度不足、不可反推 3 秒留存"
+- [ ] **`login` 报出登录身份**（v5）：成功后 stdout 含 `identity.nickname` 与 `identity.video_count`；身份查不到时 `identity_unverified: true` 且明确提示，**不得**只输出 `login_status: ok`。反例即 11-16 事故：登错号但显示 ok
+- [ ] **`300002` 不与登录过期混判**（v5）：`300002` 归 `parse_failed`，`message` 指出「可能是登录账号不对（该账号无该接口权限）」；`300333` 仍归 `login_required`。两者混判会把修复引向穷举 header/payload
 
 ## 9. 里程碑
 
