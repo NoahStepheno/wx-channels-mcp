@@ -148,3 +148,52 @@ def test_missing_field_is_counted_across_batches(conn):
     rows = conn.execute("SELECT * FROM field_absence").fetchall()
     assert [r["field"] for r in rows] == ["favorite_count"]
     assert rows[0]["consecutive_missing"] == 1
+
+
+def test_300333_with_old_cookie_is_login_required_with_next_action(tmp_path, conn):
+    """spec f2dbf0a：过期长得像解析失败，别再让人去查 parser。"""
+    from wx_channels_mcp.auth.session import NEXT_ACTION_RELOGIN, SessionState
+
+    state = SessionState(tmp_path / "login_state.json")
+    err = LoginRequired("接口返回 errCode=300333 errMsg='request failed'", code=300333)
+
+    summary = sync(FakeApi([], error=err), conn, now=FETCH_AT, session_state=state)
+
+    assert summary.status == "login_required"
+    assert summary.error["next_action"] == NEXT_ACTION_RELOGIN
+    assert "300333" in summary.error["message"]
+
+
+def test_300333_after_rescan_still_failing_becomes_parse_failed(tmp_path, conn):
+    from datetime import timedelta
+
+    from wx_channels_mcp.auth.session import SessionState
+
+    state = SessionState(tmp_path / "login_state.json")
+    err = LoginRequired("接口返回 errCode=300333 errMsg='request failed'", code=300333)
+    sync(FakeApi([], error=err), conn, now=FETCH_AT, session_state=state)      # 报过期
+    state.note_login(now=FETCH_AT + timedelta(minutes=20))                     # 人扫完了
+
+    summary = sync(FakeApi([], error=err), conn, now=FETCH_AT + timedelta(minutes=21), session_state=state)
+
+    assert summary.status == "parse_failed"
+    assert "300333" in summary.error["message"]
+    assert "next_action" not in summary.error
+
+
+def test_300333_without_state_still_login_required(conn):
+    err = LoginRequired("接口返回 errCode=300333", code=300333)
+
+    summary = sync(FakeApi([], error=err), conn, now=FETCH_AT)
+
+    assert summary.status == "login_required"
+    assert "wx-channels-mcp login" in summary.error["next_action"]
+
+
+def test_non_300333_parse_failed_has_no_next_action(conn):
+    from wx_channels_mcp.fetch.errors import ParseFailed
+
+    summary = sync(FakeApi([], error=ParseFailed("接口返回 errCode=300999", code=300999)), conn, now=FETCH_AT)
+
+    assert summary.status == "parse_failed"
+    assert "next_action" not in summary.error

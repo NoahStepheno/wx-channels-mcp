@@ -33,3 +33,19 @@ def test_errors_expose_state_bucket(exc_class, reason):
     assert isinstance(err, WxError)
     assert err.reason == reason
     assert err.readable.startswith(reason)
+
+
+def test_err_code_300333_is_login_required_at_client_layer():
+    """300333 = 登录态过期（spec f2dbf0a）；取数层先归 login_required，降级由 sync 决定。"""
+    from wx_channels_mcp.fetch.client import business_error_reason
+
+    assert business_error_reason(300333) == "login_required"
+    assert business_error_reason(300999) == "parse_failed"
+    assert business_error_reason(0) is None
+
+
+def test_login_required_carries_original_error_code():
+    err = LoginRequired("接口返回 errCode=300333", code=300333)
+
+    assert err.code == 300333
+    assert err.reason == "login_required"
