@@ -258,7 +258,10 @@ and now >= login_at                            （时钟回退/文件被改 → 
 
 - **`video_count` 严禁从页面文本正则推断**（v6 新增，实测踩过）：事故页面文本里同时有「视频号ID: 视频28」和「关注者0」，宽松的 `视频\s*(\d+)` 会把 `视频28` 读成"28 条视频"，于是给一个 0 作品账号报出 `video_count=28`——**编了个数**，比不报更糟。页面文本只能给 `nickname`/`finder_id`。
 - **`probe != "ok"` 必须体现在输出里**，不许静默当"没拿到数量"：`probe="denied"` 时 `message` 要写"该账号对 post_list 无权限，很可能扫错了微信号（需要重新扫码，换号）"。这是"扫错号"最直接、最不需要人比对证据的信号。
-- 身份查询失败**不得**让登录失败：仍返回 `login_status: ok`；`identity` 只有在 `nickname` 与 `video_count` **都为 `null`**（连号都说不出来）时才置 `null`，并置 `identity_unverified: true` + `message`。
+- 身份查询失败**不得**让登录失败：仍返回 `login_status: ok`。
+- **`probe` 必须独立于昵称解析结果输出**（v6.1 修正）：扫错号时昵称往往也解析不出来（11-16 真实页面文本实测 `parse_identity` → `None`），而「号不对」恰恰是最需要 `probe` 的场景。所以只要 `probe` 拿到了，`identity` 就**不得**为 `null`，形如：
+  `{"identity": {"nickname": null, "finder_id": null, "video_count": null, "probe": "denied"}, "identity_unverified": false, "message": "该账号对 post_list 无权限，很可能扫错了微信号…"}`
+- `identity_unverified: true` 只在 `probe` 都跑不起来（无 cookie、探测未执行）时使用，不许拿它掩盖「号不对」。
 - 身份查询**不得**新增一次独立登录/Cookie 导出，只读（页面文本 + 一次最小 `post_list`），失败即降级。
 - 读页面文本要按 host 选页（`context.pages` 里挑 URL 含 `channels.weixin.qq.com` 的那个，不要盲取 `pages[0]`），并允许最多 ~10s 重试等 SPA 渲染出文本；等不到就降级，不许阻塞登录。
 - 反例（不通过）：①只输出 `login_status: ok`，人无法判断扫的是哪个号；②`probe` 缺省或恒为 `"ok"`；③`video_count` 来自页面文本。
@@ -300,12 +303,13 @@ and now >= login_at                            （时钟回退/文件被改 → 
 
 ## 8. 验收标准（回声跑，结果贴回 MR）
 
-> **验收基线 v6（冻结，2026-11-16）**：以本文件 `acceptance-v4` tag 为准。issue 作承载与讨论，不构成基线；任何验收标准变更必须升版本并在本节写 changelog。
+> **验收基线 v6.1（冻结，2026-11-16）**：以本文件 `acceptance-v4` tag 为准。issue 作承载与讨论，不构成基线；任何验收标准变更必须升版本并在本节写 changelog。
 >
 > **changelog**
 > - v1（`acceptance-v1`，1204b20）：12 条基础验收
 > - v2（2026-11-15）：+2 条。原因：探路发现真实数据源是同源 JSON 接口而非页面，必须增加「API 值 vs UI/导出抽样交叉校验」与「脱敏检查」，否则接口字段单位或语义漂移会静默污染复盘
 > - v3（2026-11-15）：把「口径证据」从"必须 UI 截图"放宽为「UI 截图 / 前端 bundle 标签映射 / 页面 DOM 可见文本，三者任一，须可指名来源」。原因：数据页是 canvas 渲染、`innerText` 为空，截图路径不稳，Human 也不该被当成唯一取证工具；同时要求原始值不改名、派生值单列
+> - v6.1（2026-11-16）：修正 v6 的 `identity` 置空规则。v6 原文写「nickname 与 video_count 都为 null 时 identity 置 null」——但扫错号时昵称通常也解析不出来（11-16 真实页面实测），这会恰好丢掉最关键的 `probe=denied`，把「号不对」显示成「未能确认身份」。改为：只要 `probe` 拿到（ok/denied/error），`identity` 不为 null；`identity_unverified` 仅用于 probe 都跑不起来的场景。不新增验收项，只收紧判定
 > - v6（2026-11-16）：①`300333` 降级条件由「`login_at > last_300333_at`」收紧为**窗口**「且 `now - login_at < 600s`」。原因：11:53 登录、21:00 合法过期（9.2h）被旧规则判成 `parse_failed`，而 `message` 自己写着"需重新扫码"——自相矛盾，明早定时同步会把自动化引向查 parser。窗口取 10 分钟而非 30 分钟，依据是成本不对称（误判成 `login_required` 只需重扫一次且必然恢复；误判成 `parse_failed` 会引发 header/payload 穷举）；②`login` 出参新增 `identity.probe`（`ok/denied/error`），`video_count` **只许**来自 `post_list.totalCount`，严禁从页面文本正则推断——实测 `视频\s*(\d+)` 会把「视频号ID: 视频28」读成 28 条视频，给 0 作品账号编出一个数；`identity` 只在连号都说不出来时才为 `null`
 > - v5（2026-11-16）：①`login` 必须报出登录到的视频号身份（`identity` + `identity_unverified`）。原因：Human 重扫后 `login_status=ok`、cookie 0600 齐全，但登进去的是另一个号（`视频28`/最新作品 `2021-06-22`/关注 0/页面挂「申请认证」），该号对 `post_list` 返回 `300002`——**平台前端自己发的请求同样 300002**，而 11-15 那份过期 cookie 对同一接口是 `errCode:0`（574 播放/162s）。只报 `login_status: ok` 会让人以为万事大吉，白等一天；②新增「`300002` 不得判 `login_required`」验收项：`300002`＝账号无该接口权限（号不对），`300333`＝会话过期。混判会把修复方向引到 header/payload 穷举（本次已实测全部无效）。出参定义见 6.1.1
 > - v4（2026-11-15）：①`fastFlipRate` 口径调查结案为**负结论**（两主 bundle 0 命中），不再要求取证，改为验收「原始值存档 + `keep_rate_3s` 为 NULL + `pending_unit_check` 为 true」；②新增 P0.5 留存曲线（`get_feed_lost_rate`）与 P1 来源接口（`feed_aggreagate_data_by_tab_type`）的定位，二者**不阻塞 P0**；③新增「窗口分桶必须在本地算，不信服务端筛」验收项；④**导出被证伪为独立口径**（`download_post_data` 返回的仍是 `post_list` 同一份 JSON，前端本机拼表），v2 的「导出交叉校验」替换为两级锚点：A＝Human 手报值（≤2%）＋ B＝跨接口内部一致性；导出能力只保留接口、不实现解析；⑤登记实测事实「登录态只需 `sessionid`+`wxuin`，纯 HTTP 可取数」，并把 `sessionid` 定为 bearer 凭证、禁落库禁日志
