@@ -28,9 +28,12 @@ UNPARSEABLE_TEXT = "登录 微信扫码"
 NUMBERED_LAYOUT_TEXT = "视频号 · 助手 | 1 | 小满的视频号 | 视频1 | 关注者0"
 
 
-def test_parse_identity_real_accident_text_parses_nickname():
-    """真机原文没有序号；放宽正则 + 昵称守卫后能拿到 `用户0284223142`。"""
-    assert parse_identity(REAL_ACCIDENT_TEXT) == {"nickname": "用户0284223142"}
+def test_parse_identity_real_accident_text_unparsed_known_limitation():
+    """11-16 登录页（`助手 | 昵称 |`）解析不出昵称，属已知限制（spec v6.4 附注）。
+
+    本基线只认 `助手 | 序号 | 昵称 |`；将来出现第二种真机排版，先用原文进 spec 再改正则。
+    """
+    assert parse_identity(REAL_ACCIDENT_TEXT) is None
 
 
 @pytest.mark.parametrize(
@@ -45,7 +48,7 @@ def test_parse_identity_real_accident_text_parses_nickname():
     ],
 )
 def test_degenerate_page_text_never_yields_fake_nickname(text):
-    """fail closed：把 UI 文案/空串/纯数字当昵称报给 Human，比不报糟得多。"""
+    """严格正则的副作用（好的那种）：UI 文案/空串/纯数字绝不会被当成昵称。"""
     assert parse_identity(text) is None
 
 
@@ -147,12 +150,16 @@ def test_login_reports_identity_when_parsed(tmp_path):
 
 
 def test_login_wrong_account_video_count_is_visible(tmp_path):
-    """扫错号最直接的信号：真机文本读不出昵称，但接口给的 video_count 照样能看出不对（28 vs 1）。"""
-    result = _run(tmp_path, REAL_ACCIDENT_TEXT, probe=("ok", 28))
+    """昵称读不出时，`video_count` 仍要能透传出来。
+
+    注意：`probe=("ok", 3)` 是**合成**的探测结果，仅验证字段透传；
+    真机事故号对 post_list 返回 300002，从未取到过 totalCount，我们并不知道它有几条作品。
+    """
+    result = _run(tmp_path, REAL_ACCIDENT_TEXT, probe=("ok", 3))
 
     assert result["login_status"] == "ok"
-    assert result["identity"]["video_count"] == 28
-    assert result["identity"]["nickname"] == "用户0284223142"
+    assert result["identity"] == {"video_count": 3}
+    assert "nickname" not in result["identity"]
 
 
 def test_login_denied_probe_says_wrong_account(tmp_path):
@@ -243,9 +250,9 @@ def test_identity_is_json_serializable(text):
 @pytest.mark.parametrize(
     ("page_text", "probe", "expected_identity", "expected_probe"),
     [
-        # 11-16 真机原文：昵称能解析（守卫校验通过），probe 仍独立指认号对不对
-        (REAL_ACCIDENT_TEXT, ("denied", None), {"nickname": "用户0284223142"}, "denied"),
-        (REAL_ACCIDENT_TEXT, ("ok", 1), {"nickname": "用户0284223142", "video_count": 1}, "ok"),
+        # 11-16 真机原文：昵称解析不出（已知限制），probe 仍独立指认号对不对
+        (REAL_ACCIDENT_TEXT, ("denied", None), None, "denied"),
+        (REAL_ACCIDENT_TEXT, ("ok", 1), {"video_count": 1}, "ok"),
         # 页面文本解析不出昵称：只剩探测结果，identity 该 null 就 null
         (UNPARSEABLE_TEXT, ("denied", None), None, "denied"),
         (UNPARSEABLE_TEXT, ("ok", 1), {"video_count": 1}, "ok"),
