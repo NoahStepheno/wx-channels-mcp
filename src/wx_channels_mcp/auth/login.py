@@ -195,16 +195,17 @@ def _default_probe(cookies: dict[str, str]) -> tuple[str, int | None]:
 def resolve_identity(
     page_text: str, cookies: dict[str, str], *, probe: Callable[[dict[str, str]], tuple[str, int | None]]
 ) -> tuple[dict | None, str]:
-    """昵称来自页面文本、视频数**只**来自 `post_list.totalCount`。
+    """把"拿到的字段"拼成 identity，一个都没有才是 None（spec v6.2 机械定义）。
 
-    返回 `(identity, probe)`；`identity` 为 None 时调用方必须降级并说清原因。
+    - 昵称/视频号ID 来自页面文本，解析不出就不带该键；
+    - `video_count` 只来自一次 `post_list` 的 `totalCount`，拿不到就不带该键；
+    - `probe` 是登录动作的结论，独立于昵称解析结果，永远由调用方放在顶层。
     """
-    base = parse_identity(page_text)
+    identity: dict[str, object] = dict(parse_identity(page_text) or {})
     status, count = probe(cookies)
-    if base is None or status != PROBE_OK or count is None:
-        # probe 是登录动作的结论，独立于昵称是否解析出来（v6.2）
-        return None, status
-    return {**base, "video_count": count}, status
+    if count is not None and status == PROBE_OK:
+        identity["video_count"] = count
+    return (identity or None), status
 
 
 def login(
@@ -244,14 +245,13 @@ def login(
         # 探测结果独立于 identity：即使身份拿不到，也要能看出是"号不对"还是"查不到"
         "probe": probe,
     }
-    if identity is None:
-        if probe == PROBE_DENIED:
-            result["message"] = (
-                "该账号对 post_list 无权限（errCode=300002），很可能扫错了微信号："
-                "请重新扫码，并确认是平时发布视频的那个号"
-            )
-        elif probe == PROBE_ERROR:
-            result["message"] = "未能确认登录身份：身份探测失败（无法读取作品数或页面文本），请人工确认扫的是哪个视频号"
-        else:  # pragma: no cover - 理论上不可达，防御性保留
-            result["message"] = "未能确认登录身份，请人工确认扫的是哪个视频号（视频号名称/视频数）"
+    if probe == PROBE_DENIED:
+        result["message"] = (
+            "该账号对 post_list 无权限（errCode=300002），很可能扫错了微信号："
+            "请重新扫码，并确认是平时发布视频的那个号"
+        )
+    elif probe == PROBE_ERROR:
+        result["message"] = "身份探测失败（无法读取作品数），已拿到的字段照常输出；请人工确认扫的是哪个视频号"
+    elif identity is None:
+        result["message"] = "未能确认登录身份（只有作品数、没有昵称也算不出是哪个号），请人工确认扫的是哪个视频号"
     return result

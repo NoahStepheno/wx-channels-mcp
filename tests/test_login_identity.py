@@ -17,11 +17,18 @@ from wx_channels_mcp.auth.login import login
 from wx_channels_mcp.fetch.errors import WxError
 
 # 11-16 事故现场真实页面文本（headless 读出来的）
+# 11-16 事故页面真实排版：`助手 |` 后面直接是昵称，没有序号
 WRONG_ACCOUNT_TEXT = (
-    "视频号 · 助手 | 1 | 用户0284223142 | 申请认证 | 视频号ID: | 视频28 | 关注者0 | "
+    "视频号 · 助手 | 用户0284223142 | 申请认证 | 视频号ID: | 视频28 | 关注者0 | "
     "如何让更多的人看到你的视频？ | 2021年6月22日"
 )
+UNPARSEABLE_TEXT = "登录 微信扫码"
 RIGHT_ACCOUNT_TEXT = "视频号 · 助手 | 1 | 小满的视频号 | 视频1 | 关注者0"
+
+
+def test_parse_identity_real_accident_layout():
+    """真实事故排版没有序号：`助手 | 用户0284223142 |` 也要能解析。"""
+    assert parse_identity(WRONG_ACCOUNT_TEXT) == {"nickname": "用户0284223142"}
 
 
 def test_parse_identity_never_invents_video_count():
@@ -131,7 +138,7 @@ def test_login_wrong_account_is_visible_not_hidden(tmp_path):
 
 def test_login_denied_probe_says_wrong_account(tmp_path):
     """300002 是最直接的"号不对"信号，必须在 login 输出里看得见。"""
-    result = _run(tmp_path, WRONG_ACCOUNT_TEXT, probe=("denied", None))
+    result = _run(tmp_path, UNPARSEABLE_TEXT, probe=("denied", None))
 
     assert result["login_status"] == "ok"
     assert result["identity"] is None
@@ -141,26 +148,26 @@ def test_login_denied_probe_says_wrong_account(tmp_path):
 
 
 def test_identity_failure_does_not_fail_login(tmp_path):
-    """昵称解析不出但探测正常：probe=ok 保留，identity=null（v6.2 机械定义）。"""
-    result = _run(tmp_path, "登录 微信扫码", probe=("ok", 1))
+    """昵称解析不出但探测正常：已拿到的 video_count 不许丢，identity_unverified=(identity is null)。"""
+    result = _run(tmp_path, UNPARSEABLE_TEXT, probe=("ok", 1))
 
     assert result["login_status"] == "ok"
-    assert result["identity"] is None
-    assert result["identity_unverified"] is True
+    assert result["identity"] == {"video_count": 1}
+    assert result["identity_unverified"] is False
     assert result["probe"] == "ok"
-    assert "未能确认登录身份" in result["message"]
+    assert "message" not in result
 
 
 def test_identity_probe_error_message(tmp_path):
     result = _run(tmp_path, RIGHT_ACCOUNT_TEXT, probe=("error", None))
 
-    assert result["identity_unverified"] is True
+    assert result["identity_unverified"] is False, "有昵称就算 identity 非空（探测失败不等于没身份）"
     assert result["probe"] == "error"
     assert "探测失败" in result["message"]
 
 
 def test_identity_failure_message_when_no_page_text(tmp_path):
-    result = _run(tmp_path, "", probe=("error", None))
+    result = _run(tmp_path, UNPARSEABLE_TEXT, probe=("error", None))
 
     assert result["identity_unverified"] is True
     assert result["cookies_path"].endswith("cookies.json")
@@ -176,7 +183,7 @@ def test_probe_is_top_level_only(tmp_path):
 
 def test_denied_standard_shape(tmp_path):
     """v6.2：扫错号的标准输出形态（预期结果，不是失败）。"""
-    result = _run(tmp_path, "", probe=("denied", None))
+    result = _run(tmp_path, UNPARSEABLE_TEXT, probe=("denied", None))
 
     assert result["login_status"] == "ok"
     assert result["probe"] == "denied"
@@ -187,9 +194,9 @@ def test_denied_standard_shape(tmp_path):
 
 def test_identity_never_contains_null_placeholders(tmp_path):
     """v6.2 反例⑤：不许 nickname: null 这类占位。"""
-    result = _run(tmp_path, "视频号 · 助手 | 1 | 用户0284223142 | 视频28", probe=("ok", 1))
+    result = _run(tmp_path, RIGHT_ACCOUNT_TEXT, probe=("ok", 1))
 
-    assert result["identity"] == {"nickname": "用户0284223142", "video_count": 1}
+    assert result["identity"] == {"nickname": "小满的视频号", "video_count": 1}
     assert all(value is not None for value in result["identity"].values())
 
 
@@ -209,3 +216,39 @@ def test_login_still_writes_0600_with_identity(tmp_path):
 @pytest.mark.parametrize("text", [WRONG_ACCOUNT_TEXT, RIGHT_ACCOUNT_TEXT])
 def test_identity_is_json_serializable(text):
     assert json.loads(json.dumps(parse_identity(text))) == parse_identity(text)
+
+
+# --- v6.2 缺陷回归：resolve_identity 必须保留"已拿到的字段"，probe 独立 ----------------
+
+
+@pytest.mark.parametrize(
+    ("page_text", "probe", "expected_identity", "expected_probe"),
+    [
+        # 11-16 事故页面：昵称能解析（放宽后兼容"助手 | 昵称 |"），但号不对 → probe=denied
+        (WRONG_ACCOUNT_TEXT, ("denied", None), {"nickname": "用户0284223142"}, "denied"),
+        (WRONG_ACCOUNT_TEXT, ("ok", 1), {"nickname": "用户0284223142", "video_count": 1}, "ok"),
+        # 页面文本解析不出昵称：只剩探测结果，identity 该 null 就 null
+        (UNPARSEABLE_TEXT, ("denied", None), None, "denied"),
+        (UNPARSEABLE_TEXT, ("ok", 1), {"video_count": 1}, "ok"),
+        (RIGHT_ACCOUNT_TEXT, ("denied", None), {"nickname": "小满的视频号"}, "denied"),
+        (RIGHT_ACCOUNT_TEXT, ("ok", 1), {"nickname": "小满的视频号", "video_count": 1}, "ok"),
+    ],
+)
+def test_resolve_identity_keeps_what_it_got(page_text, probe, expected_identity, expected_probe):
+    """缺陷 1/3 回归：denied 不许被昵称解析失败带跑偏；已拿到的字段不许丢。"""
+    from wx_channels_mcp.auth.login import resolve_identity
+
+    identity, status = resolve_identity(page_text, {}, probe=lambda _c: probe)
+
+    assert identity == expected_identity
+    assert status == expected_probe
+
+
+def test_denied_wins_even_with_nickname(tmp_path):
+    """有昵称也可能号不对：probe=denied 必须盖过"看起来拿到了身份"。"""
+    result = _run(tmp_path, RIGHT_ACCOUNT_TEXT, probe=("denied", None))
+
+    assert result["probe"] == "denied"
+    assert result["identity"] == {"nickname": "小满的视频号"}
+    assert result["identity_unverified"] is False
+    assert "扫错了微信号" in result["message"]
