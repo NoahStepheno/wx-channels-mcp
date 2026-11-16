@@ -197,3 +197,15 @@ def test_non_300333_parse_failed_has_no_next_action(conn):
 
     assert summary.status == "parse_failed"
     assert "next_action" not in summary.error
+
+
+def test_300002_is_parse_failed_with_wrong_account_hint_not_login(conn):
+    """v5：号不对（300002）不能把自动化引向"再扫一次"。"""
+    from wx_channels_mcp.fetch.client import build_parse_failed
+
+    err = build_parse_failed(300002, "request failed", detail="{}")
+    summary = sync(FakeApi([], error=err), conn, now=FETCH_AT)
+
+    assert summary.status == "parse_failed"
+    assert "next_action" not in summary.error
+    assert "登录账号不对" in summary.error["message"]

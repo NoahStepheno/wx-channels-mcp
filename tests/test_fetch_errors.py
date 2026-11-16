@@ -49,3 +49,28 @@ def test_login_required_carries_original_error_code():
 
     assert err.code == 300333
     assert err.reason == "login_required"
+
+
+def test_err_code_300002_points_at_wrong_account_not_login():
+    """v5：300002 = 账号无该接口权限（号不对），绝不能判 login_required。"""
+    from wx_channels_mcp.fetch.client import business_error_reason
+
+    assert business_error_reason(300002) == "parse_failed"
+
+
+def test_300002_message_hints_at_wrong_account():
+    from wx_channels_mcp.fetch.client import build_parse_failed
+
+    err = build_parse_failed(300002, "request failed", detail="{}")
+
+    assert err.reason == "parse_failed"
+    assert err.code == 300002
+    assert "账号不对" in str(err)
+
+
+def test_other_err_codes_keep_plain_parse_failed_message():
+    from wx_channels_mcp.fetch.client import build_parse_failed
+
+    err = build_parse_failed(300999, "request failed")
+
+    assert "账号不对" not in str(err)

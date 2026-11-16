@@ -113,3 +113,38 @@ def test_login_command_prints_path_but_never_cookie_values(tmp_path, monkeypatch
     assert str(cookies) in out                      # 路径要能看见
     assert "SECRET" not in out                      # 值一个字都不许出
     assert "WXUIN-778899" not in out                # wxuin 也不进摘要
+
+
+def test_login_command_prints_identity(monkeypatch, capsys):
+    payload = {
+        "login_status": "ok",
+        "cookies_path": "c.json",
+        "cookie_names": ["sessionid", "wxuin"],
+        "identity": {"nickname": "小满的视频号", "video_count": 1},
+        "identity_unverified": False,
+    }
+    monkeypatch.setattr(cli, "login", lambda *a, **k: payload)
+
+    cli.main(["login", "--cookies", "c.json"])
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["identity"]["video_count"] == 1
+    assert out["identity_unverified"] is False
+
+
+def test_login_command_identity_unverified_is_visible(monkeypatch, capsys):
+    payload = {
+        "login_status": "ok",
+        "cookies_path": "c.json",
+        "cookie_names": ["sessionid", "wxuin"],
+        "identity": None,
+        "identity_unverified": True,
+        "message": "未能确认登录身份，请人工确认扫的是哪个视频号",
+    }
+    monkeypatch.setattr(cli, "login", lambda *a, **k: payload)
+
+    cli.main(["login", "--cookies", "c.json"])
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["identity_unverified"] is True
+    assert "未能确认登录身份" in out["message"]

@@ -18,6 +18,8 @@ from wx_channels_mcp.fetch.errors import LoginRequired, ParseFailed, RateLimited
 
 # 300333：cookie 过期。语义上等于"重新扫码"，不等于"parser 不会解析"
 EXPIRED_SESSION_CODE = 300333
+# 300002：会话有效但该账号没有这个接口的权限 —— 是"号不对"，不是"登录过期"
+WRONG_ACCOUNT_CODE = 300002
 
 BASE_URL = "https://channels.weixin.qq.com"
 POST_LIST_PATH = "/cgi-bin/mmfinderassistant-bin/post/post_list"
@@ -25,6 +27,14 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
 )
+
+
+def build_parse_failed(err_code: int | None, err_msg: str | None, *, detail: str = "") -> ParseFailed:
+    """构造带排查提示的 parse_failed；300002 要点明"账号可能不对"。"""
+    message = f"接口返回 errCode={err_code} errMsg={err_msg!r}"
+    if err_code == WRONG_ACCOUNT_CODE:
+        message += "：可能是登录账号不对（该账号无该接口权限），请确认扫的是哪个视频号"
+    return ParseFailed(message, detail=detail, code=err_code)
 
 
 def business_error_reason(err_code: int | None) -> str | None:
@@ -117,9 +127,7 @@ class WxApi:
                 code=err_code,
             )
         if reason:
-            raise ParseFailed(
-                f"接口返回 errCode={err_code} errMsg={data.get('errMsg')!r}", detail=text[:200], code=err_code
-            )
+            raise build_parse_failed(err_code, data.get("errMsg"), detail=text[:200])
         return data
 
     # --- 业务 -----------------------------------------------------------

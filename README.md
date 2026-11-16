@@ -26,7 +26,7 @@ pip install -e .
 PYTHONPATH=src pytest -q
 
 # 4. 登录（登录态会过期，过期后重跑这一条即可；扫码由人做，落盘由工具做）
-wx-channels-mcp login            # 开本平台独立 profile，扫码成功后写 .botharness/cookies.json（0600）
+wx-channels-mcp login   # 扫码成功后写 .botharness/cookies.json（0600），并打印登进去的是哪个号
 
 # 5. 取数 / 导出
 wx-channels-mcp sync --dry-run   # 只看将要落库的行
@@ -35,6 +35,10 @@ wx-channels-mcp export --out data/snapshots.csv
 ```
 
 `sync` 返回 `login_required` 时会给出 `next_action`（就是第 4 步那条命令）；只有重新扫码后**仍然** `errCode=300333` 才降为 `parse_failed`。
+
+**登录成功不等于号对。** `login` 会输出 `identity`（`nickname` + `video_count`，取得到再带 `finder_id`）；拿不到身份时 `identity: null` + `identity_unverified: true`，登录本身仍算成功。跑 `sync` 前先看 `identity.video_count` 是不是你要复盘的那个号。两个错误码含义不同，别混：
+- `300333` → `login_required`：会话过期，重扫即可；
+- `300002` → `parse_failed`：会话有效但**该账号没有这个接口的权限**（号不对），重扫前先确认扫的是哪个视频号。
 
 ## 硬约定
 

@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
+from wx_channels_mcp.auth.identity import fetch_video_count, parse_identity
 from wx_channels_mcp.auth.session import (
     DEFAULT_COOKIES_PATH,
     DEFAULT_LOGIN_STATE_PATH,
@@ -34,6 +35,8 @@ class BrowserSession(Protocol):
     """登录页会话：只暴露取 cookie 与关闭，便于单测替身。"""
 
     def cookies(self) -> list[dict]: ...
+
+    def page_text(self) -> str: ...
 
     def close(self) -> None: ...
 
@@ -64,6 +67,15 @@ class PlaywrightSession:
     def cookies(self) -> list[dict]:
         return self._context.cookies()
 
+    def page_text(self) -> str:
+        page = self._context.pages[0] if self._context.pages else None
+        if page is None:
+            return ""
+        try:
+            return page.inner_text("body", timeout=5_000) or ""
+        except Exception:  # 页面还没渲染出来：身份降级，不影响登录
+            return ""
+
     def close(self) -> None:
         self._context.close()
         self._playwright.stop()
@@ -75,7 +87,7 @@ def _to_cookie_dict(raw: list[dict]) -> dict[str, str]:
     return {name: wanted[name] for name in REQUIRED_COOKIES if wanted.get(name)}
 
 
-def capture_cookies(
+def capture_cookies_and_identity(
     session_factory: SessionFactory,
     *,
     profile_dir: str | Path,
@@ -83,15 +95,15 @@ def capture_cookies(
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
-) -> dict[str, str]:
-    """打开登录页并轮询，直到 sessionid + wxuin 都出现；超时抛 LoginRequired。"""
+) -> tuple[dict[str, str], str]:
+    """打开登录页轮询到 sessionid+wxuin 齐，再顺手读一次页面文本（身份用）。"""
     session = session_factory(profile_dir)
     deadline = clock() + max(timeout_seconds, 0)
     try:
         while True:
             cookies = _to_cookie_dict(session.cookies())
             if len(cookies) == len(REQUIRED_COOKIES):
-                return cookies
+                return cookies, _safe_page_text(session)
             if clock() >= deadline:
                 missing = [name for name in REQUIRED_COOKIES if name not in cookies]
                 raise LoginRequired(
@@ -106,8 +118,58 @@ def capture_cookies(
             pass
 
 
+def _safe_page_text(session: BrowserSession) -> str:
+    reader = getattr(session, "page_text", None)
+    if reader is None:
+        return ""
+    try:
+        return str(reader() or "")
+    except Exception:
+        return ""
+
+
+def capture_cookies(
+    session_factory: SessionFactory,
+    *,
+    profile_dir: str | Path,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    poll_seconds: float = DEFAULT_POLL_SECONDS,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict[str, str]:
+    """只取 cookie 的兼容入口（身份解析走 `capture_cookies_and_identity`）。"""
+    cookies, _text = capture_cookies_and_identity(
+        session_factory,
+        profile_dir=profile_dir,
+        timeout_seconds=timeout_seconds,
+        poll_seconds=poll_seconds,
+        sleep=sleep,
+        clock=clock,
+    )
+    return cookies
+
+
 def open_browser_session(profile_dir: str | Path) -> BrowserSession:
     return PlaywrightSession(profile_dir)
+
+
+def _default_video_count_fetcher(cookies: dict[str, str]) -> int | None:
+    from wx_channels_mcp.fetch.client import WxApi
+
+    return fetch_video_count(WxApi(cookies))
+
+
+def resolve_identity(
+    page_text: str, cookies: dict[str, str], *, fetcher: Callable[[dict[str, str]], int | None]
+) -> dict | None:
+    """页面文本给昵称、接口 `totalCount` 给视频数；任一缺失就降级为 None（spec 6.1.1）。"""
+    identity = parse_identity(page_text)
+    measured = fetcher(cookies)
+    if identity is None:
+        return None
+    if measured is not None:
+        identity["video_count"] = measured
+    return identity
 
 
 def login(
@@ -120,9 +182,10 @@ def login(
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    video_count_fetcher: Callable[[dict[str, str]], int | None] | None = None,
 ) -> dict:
-    """扫码 -> 落 cookies（0600）-> 记登录时间线。返回打印用摘要，绝不含 cookie 值。"""
-    cookies = capture_cookies(
+    """扫码 -> 落 cookies（0600）-> 记登录时间线 -> 报出登录身份。绝不含 cookie 值。"""
+    cookies, page_text = capture_cookies_and_identity(
         session_factory or open_browser_session,
         profile_dir=profile_dir,
         timeout_seconds=timeout_seconds,
@@ -133,10 +196,19 @@ def login(
     target = write_cookies(cookies_path, cookies)
     state = state or SessionState(DEFAULT_LOGIN_STATE_PATH)
     state.note_login(now=_utcnow())
-    return {
+
+    identity = resolve_identity(
+        page_text, cookies, fetcher=video_count_fetcher or _default_video_count_fetcher
+    )
+    result = {
         "login_status": "ok",
         "cookies_path": str(target),
         "cookie_names": sorted(cookies),
         "login_at": state.login_at(),
         "profile_dir": str(profile_dir),
+        "identity": identity,
+        "identity_unverified": identity is None,
     }
+    if identity is None:
+        result["message"] = "未能确认登录身份，请人工确认扫的是哪个视频号（视频号名称/视频数）"
+    return result
