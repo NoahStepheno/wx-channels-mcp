@@ -178,6 +178,13 @@
 
 **登录态就是两个 cookie（2026-11-15 实测）**：`channels.weixin.qq.com` 登录后只需 `sessionid` + `wxuin`，纯 Python `urllib` POST **不启浏览器**即可 `errCode:0` 取数。所以架构按「登录层只产出 cookie / 取数层是普通 HTTP 客户端」解耦，可单测、可 mock。**`sessionid` 是 bearer 凭证，等价于账号密码**：不落库、不写日志、不进样例 JSON、不出现在异常栈里（异常包装 `SESSION_COOKIE=<redacted>`）；`DATA_DIR` 与 `browser-profile` 与抖音**永不共用**。
 
+**登录态会过期，且过期长得像解析失败（2026-11-16 实测）**：同一份 cookie，11-15 `errCode=0`，11-16 变为 `errCode=300333 errMsg='request failed'`。当前实现把它归到 `parse_failed` —— **分类错了**：`parse_failed` 意思是"代码不会解析"，会让人去查 parser；实际要做的是重新扫码。判定规则写死：
+- `errCode=300333` 且本地 cookie 已存在 → **`login_required`**，`next_action="重新扫码登录后重试一次"`，不自动重试、不轮询；
+- 重新扫码后**仍**返回 300333 → 才降为 `parse_failed` 并原样带出 errCode（此时确实是别的问题）。
+- 只有 `errCode=0` 但字段结构对不上，才是 `parse_failed`。
+
+**cookie 不该靠人手导出（P0.5，不阻塞本次 MR）**：现在每次过期都要 Human 手动把 cookie 写成文件，一天一次，早晚出错。需要 `wx-channels-mcp login` 子命令：开自己的 profile、等扫码、成功后写 `cookies.json`（权限 `0600`）并打印 `login_status`；`sync` 遇到 `login_required` 时把这条命令写进 `next_action`。登录是 Human 动作，但**落盘与后续读取必须是工具的事**。
+
 **降级路径**：DOM 直读不做主路径（SPA + iframe + canvas 渲染，太脆；单篇数据页 `statistic/postDetail` 直接访问 URL 不渲染，只能经菜单进，一律走 API）。
 
 **口径约定（写死）**
@@ -211,6 +218,7 @@
 |---|---|---|
 | `wx-channels-mcp sync` | `--recent-limit N`（默认 20）、`--headless/--headed` | 作品列表 upsert 到 `videos`；对当天到期作品取快照，写 `snapshots` |
 | `wx-channels-mcp details` | `--video-id` 或 `--recent-limit N` | 单/多作品指标详情，写 `snapshots`（不重复取已冻结的 kind） |
+| `wx-channels-mcp login` | 无（可 `--profile <dir>`） | 开本平台独立 profile 等扫码，成功后写 `cookies.json`（0600），打印 `login_status`；P0.5，不阻塞 P0 |
 | `wx-channels-mcp export` | `--format csv`（默认）、`--since`、`--out` | 导出快照 CSV，列与复盘记录表对齐 |
 
 ### 6.2 MCP tools（如果没有 MCP 通道，CLI 先跑通，tool 后补）
