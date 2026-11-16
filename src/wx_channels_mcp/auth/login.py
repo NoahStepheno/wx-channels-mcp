@@ -10,7 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
-from wx_channels_mcp.auth.identity import fetch_video_count, parse_identity
+from wx_channels_mcp.auth.identity import (
+    PROBE_DENIED,
+    PROBE_ERROR,
+    PROBE_OK,
+    parse_identity,
+    probe_video_count,
+)
 from wx_channels_mcp.auth.session import (
     DEFAULT_COOKIES_PATH,
     DEFAULT_LOGIN_STATE_PATH,
@@ -153,23 +159,24 @@ def open_browser_session(profile_dir: str | Path) -> BrowserSession:
     return PlaywrightSession(profile_dir)
 
 
-def _default_video_count_fetcher(cookies: dict[str, str]) -> int | None:
+def _default_probe(cookies: dict[str, str]) -> tuple[str, int | None]:
     from wx_channels_mcp.fetch.client import WxApi
 
-    return fetch_video_count(WxApi(cookies))
+    return probe_video_count(WxApi(cookies))
 
 
 def resolve_identity(
-    page_text: str, cookies: dict[str, str], *, fetcher: Callable[[dict[str, str]], int | None]
-) -> dict | None:
-    """页面文本给昵称、接口 `totalCount` 给视频数；任一缺失就降级为 None（spec 6.1.1）。"""
-    identity = parse_identity(page_text)
-    measured = fetcher(cookies)
-    if identity is None:
-        return None
-    if measured is not None:
-        identity["video_count"] = measured
-    return identity
+    page_text: str, cookies: dict[str, str], *, probe: Callable[[dict[str, str]], tuple[str, int | None]]
+) -> tuple[dict | None, str]:
+    """昵称来自页面文本、视频数**只**来自 `post_list.totalCount`。
+
+    返回 `(identity, probe)`；`identity` 为 None 时调用方必须降级并说清原因。
+    """
+    base = parse_identity(page_text)
+    status, count = probe(cookies)
+    if base is None or status != PROBE_OK or count is None:
+        return None, status if base is not None else PROBE_ERROR
+    return {**base, "video_count": count, "probe": status}, status
 
 
 def login(
@@ -182,7 +189,7 @@ def login(
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
-    video_count_fetcher: Callable[[dict[str, str]], int | None] | None = None,
+    identity_probe: Callable[[dict[str, str]], tuple[str, int | None]] | None = None,
 ) -> dict:
     """扫码 -> 落 cookies（0600）-> 记登录时间线 -> 报出登录身份。绝不含 cookie 值。"""
     cookies, page_text = capture_cookies_and_identity(
@@ -197,9 +204,7 @@ def login(
     state = state or SessionState(DEFAULT_LOGIN_STATE_PATH)
     state.note_login(now=_utcnow())
 
-    identity = resolve_identity(
-        page_text, cookies, fetcher=video_count_fetcher or _default_video_count_fetcher
-    )
+    identity, probe = resolve_identity(page_text, cookies, probe=identity_probe or _default_probe)
     result = {
         "login_status": "ok",
         "cookies_path": str(target),
@@ -208,7 +213,17 @@ def login(
         "profile_dir": str(profile_dir),
         "identity": identity,
         "identity_unverified": identity is None,
+        # 探测结果独立于 identity：即使身份拿不到，也要能看出是"号不对"还是"查不到"
+        "probe": probe,
     }
     if identity is None:
-        result["message"] = "未能确认登录身份，请人工确认扫的是哪个视频号（视频号名称/视频数）"
+        if probe == PROBE_DENIED:
+            result["message"] = (
+                "该账号对 post_list 无权限（errCode=300002），很可能扫错了微信号："
+                "请重新扫码，并确认是平时发布视频的那个号"
+            )
+        elif probe == PROBE_ERROR:
+            result["message"] = "未能确认登录身份：身份探测失败（无法读取作品数或页面文本），请人工确认扫的是哪个视频号"
+        else:  # pragma: no cover - 理论上不可达，防御性保留
+            result["message"] = "未能确认登录身份，请人工确认扫的是哪个视频号（视频号名称/视频数）"
     return result

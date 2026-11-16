@@ -12,7 +12,7 @@ import stat
 import pytest
 
 from wx_channels_mcp.auth import login as login_mod
-from wx_channels_mcp.auth.identity import fetch_video_count, parse_identity
+from wx_channels_mcp.auth.identity import parse_identity, probe_video_count
 from wx_channels_mcp.auth.login import login
 from wx_channels_mcp.fetch.errors import WxError
 
@@ -24,15 +24,16 @@ WRONG_ACCOUNT_TEXT = (
 RIGHT_ACCOUNT_TEXT = "视频号 · 助手 | 1 | 小满的视频号 | 视频1 | 关注者0"
 
 
-def test_parse_identity_reads_nickname_and_video_count():
+def test_parse_identity_never_invents_video_count():
+    """硬伤回归：页面文本里有「视频号ID: … 视频28」和「关注者0」，绝不能猜出 28。"""
     identity = parse_identity(WRONG_ACCOUNT_TEXT)
 
-    assert identity == {"nickname": "用户0284223142", "video_count": 28}
+    assert identity == {"nickname": "用户0284223142"}
+    assert "video_count" not in identity
 
 
 def test_parse_identity_right_account():
-    assert parse_identity(RIGHT_ACCOUNT_TEXT)["nickname"] == "小满的视频号"
-    assert parse_identity(RIGHT_ACCOUNT_TEXT)["video_count"] == 1
+    assert parse_identity(RIGHT_ACCOUNT_TEXT) == {"nickname": "小满的视频号"}
 
 
 def test_parse_identity_includes_finder_id_when_present():
@@ -43,13 +44,13 @@ def test_parse_identity_includes_finder_id_when_present():
     assert identity["finder_id"] == "v2_060000227c00@finder"
 
 
-def test_parse_identity_missing_fields_returns_none():
+def test_parse_identity_missing_nickname_returns_none():
     assert parse_identity("") is None
     assert parse_identity("登录 微信扫码") is None
-    assert parse_identity("视频号 · 助手 | 用户0284223142") is None, "缺 video_count 不算身份已确认"
+    assert parse_identity("视频号ID: 视频28 | 关注者0") is None, "只有数字序列不算昵称"
 
 
-def test_fetch_video_count_uses_total_count():
+def test_probe_video_count_uses_total_count():
     class Api:
         def __init__(self, payload):
             self.payload = payload
@@ -57,16 +58,24 @@ def test_fetch_video_count_uses_total_count():
         def list_posts(self, **_kwargs):
             return {"errCode": 0, "data": self.payload}
 
-    assert fetch_video_count(Api({"totalCount": 1})) == 1
-    assert fetch_video_count(Api({})) is None
+    assert probe_video_count(Api({"totalCount": 1})) == ("ok", 1)
+    assert probe_video_count(Api({})) == ("error", None)
 
 
-def test_fetch_video_count_swallows_api_error():
+def test_probe_video_count_marks_300002_as_denied():
     class Api:
         def list_posts(self, **_kwargs):
-            raise WxError("300002")
+            raise WxError("接口返回 errCode=300002", code=300002)
 
-    assert fetch_video_count(Api()) is None
+    assert probe_video_count(Api()) == ("denied", None)
+
+
+def test_probe_video_count_other_error_is_error():
+    class Api:
+        def list_posts(self, **_kwargs):
+            raise WxError("网络断了")
+
+    assert probe_video_count(Api()) == ("error", None)
 
 
 class FakeSession:
@@ -88,7 +97,7 @@ class FakeSession:
 COOKIES = [{"name": "sessionid", "value": "SECRET"}, {"name": "wxuin", "value": "1"}]
 
 
-def _run(tmp_path, text, *, video_count=1, fetcher=None):
+def _run(tmp_path, text, *, probe=("ok", 1), probe_fn=None):
     session = FakeSession(COOKIES, text)
     return login(
         tmp_path / "cookies.json",
@@ -96,46 +105,60 @@ def _run(tmp_path, text, *, video_count=1, fetcher=None):
         session_factory=lambda _p: session,
         sleep=lambda _s: None,
         state=login_mod.SessionState(tmp_path / "state.json"),
-        video_count_fetcher=fetcher or (lambda _cookies: video_count),
+        identity_probe=probe_fn or (lambda _cookies: probe),
     )
 
 
 def test_login_reports_identity_when_parsed(tmp_path):
-    result = _run(tmp_path, RIGHT_ACCOUNT_TEXT, video_count=1)
+    result = _run(tmp_path, RIGHT_ACCOUNT_TEXT, probe=("ok", 1))
 
     assert result["login_status"] == "ok"
-    assert result["identity"] == {"nickname": "小满的视频号", "video_count": 1}
+    assert result["identity"] == {"nickname": "小满的视频号", "video_count": 1, "probe": "ok"}
     assert result["identity_unverified"] is False
+    assert result["probe"] == "ok"
     assert "identity" in json.dumps(result)
 
 
-def test_login_prefers_measured_video_count_over_page_text(tmp_path):
-    """页面文本可能滞后；接口 totalCount 更可信。"""
-    result = _run(tmp_path, WRONG_ACCOUNT_TEXT, video_count=28)
+def test_login_wrong_account_is_visible_not_hidden(tmp_path):
+    """扫错号：identity 里就是别的号（视频数来自接口，不是页面文本猜的）。"""
+    result = _run(tmp_path, WRONG_ACCOUNT_TEXT, probe=("ok", 28))
 
+    assert result["login_status"] == "ok"
     assert result["identity"]["video_count"] == 28
     assert result["identity"]["nickname"] == "用户0284223142"
 
 
-def test_login_wrong_account_is_visible_not_hidden(tmp_path):
-    """扫错号也要能一眼看出来：identity 里就是别的号。"""
-    result = _run(tmp_path, WRONG_ACCOUNT_TEXT, video_count=28)
-
-    assert result["login_status"] == "ok"
-    assert result["identity"]["video_count"] != 1
-
-
-def test_identity_failure_does_not_fail_login(tmp_path):
-    result = _run(tmp_path, "登录 微信扫码", video_count=None)
+def test_login_denied_probe_says_wrong_account(tmp_path):
+    """300002 是最直接的"号不对"信号，必须在 login 输出里看得见。"""
+    result = _run(tmp_path, WRONG_ACCOUNT_TEXT, probe=("denied", None))
 
     assert result["login_status"] == "ok"
     assert result["identity"] is None
     assert result["identity_unverified"] is True
+    assert result["probe"] == "denied"
+    assert "扫错了微信号" in result["message"]
+
+
+def test_identity_failure_does_not_fail_login(tmp_path):
+    result = _run(tmp_path, "登录 微信扫码", probe=("ok", 1))
+
+    assert result["login_status"] == "ok"
+    assert result["identity"] is None
+    assert result["identity_unverified"] is True
+    assert result["probe"] == "error"
     assert "未能确认登录身份" in result["message"]
 
 
+def test_identity_probe_error_message(tmp_path):
+    result = _run(tmp_path, RIGHT_ACCOUNT_TEXT, probe=("error", None))
+
+    assert result["identity_unverified"] is True
+    assert result["probe"] == "error"
+    assert "探测失败" in result["message"]
+
+
 def test_identity_failure_message_when_no_page_text(tmp_path):
-    result = _run(tmp_path, "", video_count=None)
+    result = _run(tmp_path, "", probe=("error", None))
 
     assert result["identity_unverified"] is True
     assert result["cookies_path"].endswith("cookies.json")
