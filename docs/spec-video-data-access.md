@@ -266,6 +266,7 @@ and now >= login_at                            （时钟回退/文件被改 → 
   判定通过的条件是 **`probe` 明确指出 denied + message 说清原因**，而不是"必须有 identity"。
 - **`video_count` 严禁从页面文本正则推断**（实测踩过）：事故页面文本里同时有「视频号ID: 视频28」和「关注者0」，宽松的 `视频\s*(\d+)` 会把 `视频28` 读成"28 条视频"，给一个 0 作品账号报出 `video_count=28`——**编了个数**，比不报更糟。
 - 身份查询失败**不得**让登录失败：仍返回 `login_status: ok`，只是 `probe != "ok"` 或 `identity: null`。
+- **`message` 由 `probe` 决定，不以 `identity` 是否为 null 为条件**（v6.2 澄清）：`denied` 一律给 300002 的"很可能扫错号"提示，哪怕 `identity` 里有昵称；`error` 给"身份探测失败"。反过来也一样：`probe=ok` 却没有昵称时**不要**说"未能确认身份"，直接报 `video_count` 即可。
 - 身份查询**不得**新增一次独立登录/Cookie 导出，只读（页面文本 + 一次最小 `post_list`），失败即降级。
 - 读页面文本要按 host 选页（`context.pages` 里挑 URL 含 `channels.weixin.qq.com` 的那个，不要盲取 `pages[0]`），并允许最多 ~10s 重试等 SPA 渲染出文本；等不到就降级，不许阻塞登录。
 - 反例（不通过）：①只输出 `login_status: ok`，人无法判断扫的是哪个号；②`probe` 缺省或恒为 `"ok"`；③`video_count` 来自页面文本；④`probe` 只在 `identity` 里出现（identity 为 null 时信号丢失）；⑤输出 `nickname: null` 之类的占位字段。
