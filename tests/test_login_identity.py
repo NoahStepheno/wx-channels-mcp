@@ -17,8 +17,7 @@ from wx_channels_mcp.auth.login import login
 from wx_channels_mcp.fetch.errors import WxError
 
 # 11-16 事故现场真实页面文本（headless 读出来的）
-# 11-16 真机抓到的登录页原文（原样，未改动）。注意：`助手 |` 后面直接是昵称，没有序号，
-# 现有正则认不出 → parse_identity 返回 None。这是**已知限制**，不许为了让它变绿去猜平台结构。
+# 11-16 真机抓到的登录页原文（原样，未改动）：`助手 |` 后面直接是昵称，没有序号。
 REAL_ACCIDENT_TEXT = (
     "视频号 · 助手 | 用户0284223142 | 申请认证 | 视频号ID: 视频28 | 关注者0 | "
     "2021年6月22日 | 如何让更多的人看到你的视频？"
@@ -29,9 +28,25 @@ UNPARSEABLE_TEXT = "登录 微信扫码"
 NUMBERED_LAYOUT_TEXT = "视频号 · 助手 | 1 | 小满的视频号 | 视频1 | 关注者0"
 
 
-def test_parse_identity_real_accident_text_is_unparsed_known_limitation():
-    """11-16 登录页昵称无法解析，属已知限制（真机原文没有 `助手 | 序号 |` 那段）。"""
-    assert parse_identity(REAL_ACCIDENT_TEXT) is None
+def test_parse_identity_real_accident_text_parses_nickname():
+    """真机原文没有序号；放宽正则 + 昵称守卫后能拿到 `用户0284223142`。"""
+    assert parse_identity(REAL_ACCIDENT_TEXT) == {"nickname": "用户0284223142"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "助手 | 申请认证 | 视频号ID: 视频28 | 关注者0",
+        "助手 | 视频号ID: 视频28 | 关注者0",
+        "助手 | | 申请认证 | 关注者0",
+        "助手 | 内容管理 | 互动管理 | 数据中心 | 设置",
+        "助手 | 设置 | 关注者",
+        "助手 | 12345 | 评论",
+    ],
+)
+def test_degenerate_page_text_never_yields_fake_nickname(text):
+    """fail closed：把 UI 文案/空串/纯数字当昵称报给 Human，比不报糟得多。"""
+    assert parse_identity(text) is None
 
 
 def test_parse_identity_never_invents_video_count():
@@ -136,8 +151,8 @@ def test_login_wrong_account_video_count_is_visible(tmp_path):
     result = _run(tmp_path, REAL_ACCIDENT_TEXT, probe=("ok", 28))
 
     assert result["login_status"] == "ok"
-    assert result["identity"] == {"video_count": 28}
-    assert "nickname" not in result["identity"]
+    assert result["identity"]["video_count"] == 28
+    assert result["identity"]["nickname"] == "用户0284223142"
 
 
 def test_login_denied_probe_says_wrong_account(tmp_path):
@@ -228,9 +243,9 @@ def test_identity_is_json_serializable(text):
 @pytest.mark.parametrize(
     ("page_text", "probe", "expected_identity", "expected_probe"),
     [
-        # 11-16 真机原文：昵称解析不出（已知限制），但 probe 仍要能指认"号不对"
-        (REAL_ACCIDENT_TEXT, ("denied", None), None, "denied"),
-        (REAL_ACCIDENT_TEXT, ("ok", 1), {"video_count": 1}, "ok"),
+        # 11-16 真机原文：昵称能解析（守卫校验通过），probe 仍独立指认号对不对
+        (REAL_ACCIDENT_TEXT, ("denied", None), {"nickname": "用户0284223142"}, "denied"),
+        (REAL_ACCIDENT_TEXT, ("ok", 1), {"nickname": "用户0284223142", "video_count": 1}, "ok"),
         # 页面文本解析不出昵称：只剩探测结果，identity 该 null 就 null
         (UNPARSEABLE_TEXT, ("denied", None), None, "denied"),
         (UNPARSEABLE_TEXT, ("ok", 1), {"video_count": 1}, "ok"),
