@@ -18,14 +18,28 @@ import re
 from wx_channels_mcp.fetch.client import WRONG_ACCOUNT_CODE
 from wx_channels_mcp.fetch.errors import WxError
 
-# 只认 spec v6.4 固定的排版 `助手 | <序号> | 昵称 |`。
-# 严格正则按构造就是 fail-closed：认不出就返回 None，不维护黑名单、不猜第二种排版。
-_NICKNAME = re.compile(r"助手\s*[|｜]\s*\d+\s*[|｜]\s*([^|｜\n]{1,40}?)\s*[|｜]")
+# spec v6.5：昵称靠**结构锚点**认，不靠黑名单。
+# 锚点：`助手 | [序号 |] 昵称 | [申请认证 |] 视频号ID`——真机天然满足，菜单列表天然不满足。
+_NICKNAME = re.compile(
+    r"助手\s*[|｜]\s*(?:\d+\s*[|｜]\s*)?([^|｜\n]{1,30}?)\s*[|｜]\s*(?:申请认证\s*[|｜]\s*)?视频号ID"
+)
 _FINDER_ID = re.compile(r"视频号ID\s*[:：]?\s*([A-Za-z0-9_@\-]{6,})")
+
+# 黑名单只做辅助，且只留实测漏网的那种"英文设置页标签"
+_NICKNAME_DENYLIST = {
+    # 英文设置页标签（实测漏网）
+    "settings", "settings…", "preferences",
+    # 结构段本身：昵称后面允许跟 `申请认证 |`，所以它自己绝不可能是昵称
+    "申请认证", "关注者", "视频号id",
+}
 
 PROBE_OK = "ok"
 PROBE_DENIED = "denied"
 PROBE_ERROR = "error"
+
+
+def _is_denied_nickname(candidate: str) -> bool:
+    return candidate.strip().lower() in _NICKNAME_DENYLIST
 
 
 def parse_identity(page_text: str) -> dict | None:
@@ -35,10 +49,12 @@ def parse_identity(page_text: str) -> dict | None:
         return None
 
     nickname_match = _NICKNAME.search(text)
-    if not nickname_match:
+    candidate = nickname_match.group(1).strip() if nickname_match else ""
+    if not candidate or _is_denied_nickname(candidate):
         return None
 
-    identity: dict[str, object] = {"nickname": nickname_match.group(1).strip()}
+    # 昵称只用于展示：这里拿不到不影响 probe/status（v6.5）
+    identity: dict[str, object] = {"nickname": candidate}
     finder_match = _FINDER_ID.search(text)
     if finder_match:
         identity["finder_id"] = finder_match.group(1)
