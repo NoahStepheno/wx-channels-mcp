@@ -90,6 +90,13 @@ class PlaywrightSession:
                 channel=channel,
                 headless=headless,
             )
+            # 关键：先清掉 profile 里的旧 cookie。
+            # 否则"上次登录残留的 sessionid"会让轮询立刻拿到一对过期 cookie，
+            # 表现为 login 成功但 sync 立刻 300333（2026-11-17 真机踩到）。
+            try:
+                self._context.clear_cookies()
+            except Exception:  # 清不掉也要能继续，后面靠"cookie 必须是新出现的"兜底
+                pass
             page = self._context.pages[0] if self._context.pages else self._context.new_page()
             page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60_000)
         except Exception:

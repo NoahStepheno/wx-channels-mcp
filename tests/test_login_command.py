@@ -183,3 +183,59 @@ def test_select_login_page_prefers_channels_host():
     assert select_login_page([blank, channels]) is channels
     assert select_login_page([blank]) is blank
     assert select_login_page([]) is None
+
+
+def test_playwright_session_clears_stale_cookies_before_login(monkeypatch):
+    """2026-11-17 真机：profile 里残留旧 sessionid，轮询立刻拿到过期对 → login 假成功。
+
+    必须在打开登录页前清掉 cookie，否则 capture 会把上次的失效会话当成本次扫码结果。
+    """
+    import sys
+    import types
+
+    from wx_channels_mcp.auth.login import PlaywrightSession
+
+    calls = []
+
+    class FakePage:
+        def goto(self, url, **_kwargs):
+            calls.append(("goto", url))
+
+    class FakeContext:
+        pages: list = []
+
+        def clear_cookies(self):
+            calls.append(("clear_cookies", None))
+
+        def new_page(self):
+            return FakePage()
+
+        def cookies(self):
+            return []
+
+        def close(self):
+            calls.append(("close", None))
+
+    class FakeChromium:
+        def launch_persistent_context(self, *args, **kwargs):
+            calls.append(("launch", str(args[0])))
+            return FakeContext()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        def stop(self):
+            pass
+
+    class FakeSyncPlaywright:
+        def start(self):
+            return FakePlaywright()
+
+    fake_module = types.SimpleNamespace(sync_playwright=lambda: FakeSyncPlaywright())
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_module)
+
+    session = PlaywrightSession("/tmp/x-profile", headless=True)
+    session.close()
+
+    kinds = [name for name, _ in calls]
+    assert kinds.index("clear_cookies") < kinds.index("goto"), "清 cookie 必须在进登录页之前"
