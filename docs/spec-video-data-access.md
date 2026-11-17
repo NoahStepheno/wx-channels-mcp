@@ -280,6 +280,10 @@ and now >= login_at                            （时钟回退/文件被改 → 
 - **`login_status: ok` 必须以"真的登进去了"为条件**（v6.8）：cookie 存在**不等于**登录成功。实测 2026-11-17 11:07 那次 `login` 报 `login_status: ok`、`sessionid`/`wxuin` 齐全，但浏览器仍停在 `https://channels.weixin.qq.com/login.html`，页面文字是"登录视频号助手 … 加载失败，点击重试"，落地 cookie 与 11-16 那份**完全相同**（sha256 前 12 位 `4afbf84bec47`），`post_list` 返回 300333。
   因此判成功要同时满足：①页面 URL 已离开 `login.html`（进入 `channels.weixin.qq.com/platform` 系）；②登录后那次 `probe` 不是 `300333`。任一不满足 → `login_status: "not_logged_in"`（exit 非 0），`message` 写清"扫码未完成/页面停在登录页，请重扫"。
   允许的例外只有一种：页面已进后台但 `probe=error`（网络毛刺）——此时 `login_status: ok` + `probe: "error"`，并提示重试 `sync`。
+
+- **登录失败不得留下任何痕迹**（v6.9）：`not_logged_in` 时**不得**写 `cookies.json`、**不得**调 `note_login`。输出用 `cookies_written: false` + `login_at: null` 明确告知"文件没动"，`cookies_path` 仍指向原路径。
+  理由有两层：①一次误扫会把可用的旧 cookie 覆盖成登录页的匿名 cookie，把"还能跑"变成"必须重扫"；②更隐蔽的是 `login_at` —— 失败也记成"刚登录"，之后 `sync` 遇 300333 会落进 600s 窗口判 `parse_failed`，把本该"去重扫"的提示引向"去查 parser"，等于让 v6 修的误诊换个入口复活。
+  必须有的回归：失败不覆盖既有 cookie、失败不写 `login_at`、**失败之后同码 300333 仍判 `login_required`**。
 - 反例（不通过）：①只输出 `login_status: ok`，人无法判断扫的是哪个号；②`probe` 缺省或恒为 `"ok"`；③`video_count` 来自页面文本；④`probe` 只在 `identity` 里出现（identity 为 null 时信号丢失）；⑤输出 `nickname: null` 之类的占位字段。
 
 `--profile` 仍可覆盖 profile 目录；cookie 路径沿用 6.1 的默认值（相对 CWD，必须在仓库根跑）。
@@ -319,12 +323,13 @@ and now >= login_at                            （时钟回退/文件被改 → 
 
 ## 8. 验收标准（回声跑，结果贴回 MR）
 
-> **验收基线 v6.8（冻结，2026-11-17）**：以本文件 `acceptance-v6.8` tag 为准。issue 作承载与讨论，不构成基线；任何验收标准变更必须升版本并在本节写 changelog。
+> **验收基线 v6.9（冻结，2026-11-17）**：以本文件 `acceptance-v6.9` tag 为准。issue 作承载与讨论，不构成基线；任何验收标准变更必须升版本并在本节写 changelog。
 >
 > **changelog**
 > - v1（`acceptance-v1`，1204b20）：12 条基础验收
 > - v2（2026-11-15）：+2 条。原因：探路发现真实数据源是同源 JSON 接口而非页面，必须增加「API 值 vs UI/导出抽样交叉校验」与「脱敏检查」，否则接口字段单位或语义漂移会静默污染复盘
 > - v3（2026-11-15）：把「口径证据」从"必须 UI 截图"放宽为「UI 截图 / 前端 bundle 标签映射 / 页面 DOM 可见文本，三者任一，须可指名来源」。原因：数据页是 canvas 渲染、`innerText` 为空，截图路径不稳，Human 也不该被当成唯一取证工具；同时要求原始值不改名、派生值单列
+> - v6.9（2026-11-17）：明确「登录失败不得留下任何痕迹」——`not_logged_in` 不写 cookie、不记 `login_at`，输出 `cookies_written: false` / `login_at: null`。起因：v6.8 实现里先落盘后判定，一次失败扫码既会覆盖可用 cookie，又会让 `sync` 的 300333 落进 600s 窗口判成 `parse_failed`（"误诊换入口复活"）
 > - v6.8（2026-11-17）：`login_status: ok` 增加前置条件——必须真的进入创作者后台且登录后探测不是 300333，否则报 `not_logged_in`。原因：11-17 11:07 复扫，cookie 齐全、工具报 ok，但浏览器仍停在 `login.html`（"加载失败，点击重试"），sessionid 与 11-16 那份逐字节相同，`post_list` 300333——"cookie 在"被当成了"登录成"。根因：登录流程只轮询 cookie 出现，没有等页面离开登录页，也没有验证会话可用
 > - v6.7（2026-11-17）：新增「状态时间线写入失败不得改变判定」。原因：11-17 09:10 d7 验收时，`data/login_state.json` 不可写导致 `classify_expiry` 抛 `PermissionError`，`sync` 直接 traceback，而正确行为是照常返回 `login_required` 并把"未能刷新 last_300333_at"写进 note。只读 `DATA_DIR`、root 跑过后的权限漂移、受限执行环境都会触发
 > - v6.6（2026-11-16）：昵称提取收敛为"(A) 严格正则"或"(B) 放宽+结构锚点"二选一，明确禁止"(C) 放宽+仅黑名单"；**A 即可通过验收**，B 属可选改进不阻塞。同时重申 v6.5 的 `nickname` 只展示不判定。原因：为实现 B 已往返四轮，而昵称只是展示字段，不该拖住 d7 真机验收
