@@ -45,19 +45,26 @@ def parse_identity(page_text: str) -> dict | None:
     return identity
 
 
+def probe_video_count_detailed(api) -> tuple[str, int | None, int | None]:
+    """同 `probe_video_count`，但把业务码也带出来，供 login 判断"扫码是否真的登进去"。"""
+    try:
+        data = api.list_posts(page_size=1)
+    except WxError as exc:
+        code = getattr(exc, "code", None)
+        if code == WRONG_ACCOUNT_CODE:
+            return PROBE_DENIED, None, code
+        return PROBE_ERROR, None, code
+    total = (data.get("data") or {}).get("totalCount")
+    try:
+        return PROBE_OK, int(total), 0
+    except (TypeError, ValueError):
+        return PROBE_ERROR, None, None
+
+
 def probe_video_count(api) -> tuple[str, int | None]:
     """一次最小 `post_list` 读 `totalCount`，并保留失败原因。
 
     返回 `(probe, video_count)`：`ok` 拿到数、`denied` 是 300002（号不对）、其余 `error`。
     """
-    try:
-        data = api.list_posts(page_size=1)
-    except WxError as exc:
-        if getattr(exc, "code", None) == WRONG_ACCOUNT_CODE:
-            return PROBE_DENIED, None
-        return PROBE_ERROR, None
-    total = (data.get("data") or {}).get("totalCount")
-    try:
-        return PROBE_OK, int(total)
-    except (TypeError, ValueError):
-        return PROBE_ERROR, None
+    probe, count, _code = probe_video_count_detailed(api)
+    return probe, count

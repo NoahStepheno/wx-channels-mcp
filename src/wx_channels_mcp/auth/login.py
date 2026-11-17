@@ -15,8 +15,9 @@ from wx_channels_mcp.auth.identity import (
     PROBE_ERROR,
     PROBE_OK,
     parse_identity,
-    probe_video_count,
+    probe_video_count_detailed,
 )
+from wx_channels_mcp.fetch.client import EXPIRED_SESSION_CODE
 from wx_channels_mcp.auth.session import (
     DEFAULT_COOKIES_PATH,
     DEFAULT_LOGIN_STATE_PATH,
@@ -42,6 +43,8 @@ class BrowserSession(Protocol):
 
     def cookies(self) -> list[dict]: ...
 
+    def page_url(self) -> str: ...
+
     def page_text(self) -> str: ...
 
     def close(self) -> None: ...
@@ -51,6 +54,7 @@ SessionFactory = Callable[[str | Path], BrowserSession]
 
 
 PAGE_TEXT_WAIT_SECONDS = 10.0
+DEFAULT_REDIRECT_WAIT_SECONDS = 15.0
 LOGIN_HOST = "channels.weixin.qq.com"
 
 
@@ -106,6 +110,13 @@ class PlaywrightSession:
     def cookies(self) -> list[dict]:
         return self._context.cookies()
 
+    def page_url(self) -> str:
+        page = select_login_page(self._context.pages)
+        try:
+            return page.url or "" if page is not None else ""
+        except Exception:
+            return ""
+
     def page_text(self) -> str:
         """按 host 选登录页（不盲取 pages[0]），最多等 ~10s 让 SPA 渲染出文本。"""
         deadline = time.monotonic() + PAGE_TEXT_WAIT_SECONDS
@@ -135,15 +146,17 @@ def capture_cookies_and_identity(
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
-) -> tuple[dict[str, str], str]:
-    """打开登录页轮询到 sessionid+wxuin 齐，再顺手读一次页面文本（身份用）。"""
+    redirect_wait_seconds: float = DEFAULT_REDIRECT_WAIT_SECONDS,
+) -> tuple[dict[str, str], str, str]:
+    """轮询到 sessionid+wxuin 齐，等页面离开 login.html，再读页面文本与 URL。"""
     session = session_factory(profile_dir)
     deadline = clock() + max(timeout_seconds, 0)
     try:
         while True:
             cookies = _to_cookie_dict(session.cookies())
             if len(cookies) == len(REQUIRED_COOKIES):
-                return cookies, _safe_page_text(session)
+                _wait_leave_login_page(session, clock=clock, sleep=sleep, limit=redirect_wait_seconds)
+                return cookies, _safe_page_text(session), _safe_page_url(session)
             if clock() >= deadline:
                 missing = [name for name in REQUIRED_COOKIES if name not in cookies]
                 raise LoginRequired(
@@ -156,6 +169,30 @@ def capture_cookies_and_identity(
             session.close()
         except Exception:  # 关不掉不能掩盖扫码结果
             pass
+
+
+def _wait_leave_login_page(
+    session: BrowserSession, *, clock: Callable[[], float], sleep: Callable[[float], None], limit: float
+) -> None:
+    """扫码成功后页面应离开 login.html；给它一点时间跳转，超时由上层判 not_logged_in。"""
+    url = _safe_page_url(session)
+    if not url:  # 拿不到页面 URL（替身/无浏览器）：不阻塞，交给探测结果判定
+        return
+    deadline = clock() + max(limit, 0)
+    while clock() < deadline:
+        if "login.html" not in _safe_page_url(session):
+            return
+        sleep(0.5)
+
+
+def _safe_page_url(session: BrowserSession) -> str:
+    reader = getattr(session, "page_url", None)
+    if reader is None:
+        return ""
+    try:
+        return str(reader() or "")
+    except Exception:
+        return ""
 
 
 def _safe_page_text(session: BrowserSession) -> str:
@@ -178,7 +215,7 @@ def capture_cookies(
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, str]:
     """只取 cookie 的兼容入口（身份解析走 `capture_cookies_and_identity`）。"""
-    cookies, _text = capture_cookies_and_identity(
+    cookies, _text, _url = capture_cookies_and_identity(
         session_factory,
         profile_dir=profile_dir,
         timeout_seconds=timeout_seconds,
@@ -193,15 +230,18 @@ def open_browser_session(profile_dir: str | Path) -> BrowserSession:
     return PlaywrightSession(profile_dir)
 
 
-def _default_probe(cookies: dict[str, str]) -> tuple[str, int | None]:
+def _default_probe(cookies: dict[str, str]) -> tuple[str, int | None, int | None]:
     from wx_channels_mcp.fetch.client import WxApi
 
-    return probe_video_count(WxApi(cookies))
+    return probe_video_count_detailed(WxApi(cookies))
 
 
 def resolve_identity(
-    page_text: str, cookies: dict[str, str], *, probe: Callable[[dict[str, str]], tuple[str, int | None]]
-) -> tuple[dict | None, str]:
+    page_text: str,
+    cookies: dict[str, str],
+    *,
+    probe: Callable[[dict[str, str]], tuple[str, int | None, int | None]],
+) -> tuple[dict | None, str, int | None]:
     """把"拿到的字段"拼成 identity，一个都没有才是 None（spec v6.2 机械定义）。
 
     - 昵称/视频号ID 来自页面文本，解析不出就不带该键；
@@ -209,10 +249,10 @@ def resolve_identity(
     - `probe` 是登录动作的结论，独立于昵称解析结果，永远由调用方放在顶层。
     """
     identity: dict[str, object] = dict(parse_identity(page_text) or {})
-    status, count = probe(cookies)
+    status, count, code = probe(cookies)
     if count is not None and status == PROBE_OK:
         identity["video_count"] = count
-    return (identity or None), status
+    return (identity or None), status, code
 
 
 def login(
@@ -225,34 +265,45 @@ def login(
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
-    identity_probe: Callable[[dict[str, str]], tuple[str, int | None]] | None = None,
+    identity_probe: Callable[[dict[str, str]], tuple[str, int | None, int | None]] | None = None,
+    redirect_wait_seconds: float = DEFAULT_REDIRECT_WAIT_SECONDS,
 ) -> dict:
     """扫码 -> 落 cookies（0600）-> 记登录时间线 -> 报出登录身份。绝不含 cookie 值。"""
-    cookies, page_text = capture_cookies_and_identity(
+    cookies, page_text, page_url = capture_cookies_and_identity(
         session_factory or open_browser_session,
         profile_dir=profile_dir,
         timeout_seconds=timeout_seconds,
         poll_seconds=poll_seconds,
         sleep=sleep,
         clock=clock,
+        redirect_wait_seconds=redirect_wait_seconds,
     )
     target = write_cookies(cookies_path, cookies)
     state = state or SessionState(DEFAULT_LOGIN_STATE_PATH)
     state.note_login(now=_utcnow())
 
-    identity, probe = resolve_identity(page_text, cookies, probe=identity_probe or _default_probe)
+    identity, probe, code = resolve_identity(page_text, cookies, probe=identity_probe or _default_probe)
+
+    # spec v6.8：`ok` 必须同时满足"页面已离开 login.html"与"会话不是 300333"。
+    # 登录页本身就会下发 sessionid+wxuin，所以"cookie 齐"从构造上就不能证明登录成功。
+    still_on_login_page = bool(page_url) and "login.html" in page_url
+    session_expired = code == EXPIRED_SESSION_CODE
     result = {
-        "login_status": "ok",
+        "login_status": "not_logged_in" if (still_on_login_page or session_expired) else "ok",
         "cookies_path": str(target),
         "cookie_names": sorted(cookies),
         "login_at": state.login_at(),
         "profile_dir": str(profile_dir),
         "identity": identity,
         "identity_unverified": identity is None,
+        "page_url": page_url,
         # 探测结果独立于 identity：即使身份拿不到，也要能看出是"号不对"还是"查不到"
         "probe": probe,
     }
-    if probe == PROBE_DENIED:
+    if result["login_status"] != "ok":
+        reason = "页面仍停在登录页" if still_on_login_page else "扫码后会话立即失效（errCode=300333）"
+        result["message"] = f"扫码未完成或会话立即失效：{reason}；请重新扫码，扫完确认页面已进入创作者中心"
+    elif probe == PROBE_DENIED:
         result["message"] = (
             "该账号对 post_list 无权限（errCode=300002），很可能扫错了微信号："
             "请重新扫码，并确认是平时发布视频的那个号"

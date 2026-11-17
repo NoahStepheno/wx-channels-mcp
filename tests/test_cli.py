@@ -148,3 +148,20 @@ def test_login_command_identity_unverified_is_visible(monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["identity_unverified"] is True
     assert "未能确认登录身份" in out["message"]
+
+
+def test_not_logged_in_exits_nonzero(monkeypatch, capsys):
+    """v6.8：not_logged_in 必须 exit 非 0，别让脚本把"没登进去"当成功。"""
+    payload = {
+        "login_status": "not_logged_in",
+        "cookies_path": "c.json",
+        "probe": "error",
+        "message": "扫码未完成或会话立即失效；请重新扫码",
+    }
+    monkeypatch.setattr(cli, "login", lambda *a, **k: payload)
+
+    code = cli.main(["login", "--cookies", "c.json"])
+
+    out = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert out["login_status"] == "not_logged_in"

@@ -36,7 +36,8 @@ def _cmd_login(args) -> int:
         print(json.dumps({"login_status": "login_required", "message": str(exc)}, ensure_ascii=False))
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
+    # spec v6.8：只有真登进去才算成功；not_logged_in 必须让调用方（含自动化）失败
+    return 0 if result.get("login_status") == "ok" else 2
 
 
 def _cmd_sync(args) -> int:

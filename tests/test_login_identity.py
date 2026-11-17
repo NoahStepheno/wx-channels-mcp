@@ -124,6 +124,12 @@ class FakeSession:
 COOKIES = [{"name": "sessionid", "value": "SECRET"}, {"name": "wxuin", "value": "1"}]
 
 
+def _with_code(probe):
+    status, count = probe
+    code = 300002 if status == "denied" else (0 if status == "ok" else None)
+    return status, count, code
+
+
 def _run(tmp_path, text, *, probe=("ok", 1), probe_fn=None):
     session = FakeSession(COOKIES, text)
     return login(
@@ -132,7 +138,7 @@ def _run(tmp_path, text, *, probe=("ok", 1), probe_fn=None):
         session_factory=lambda _p: session,
         sleep=lambda _s: None,
         state=login_mod.SessionState(tmp_path / "state.json"),
-        identity_probe=probe_fn or (lambda _cookies: probe),
+        identity_probe=probe_fn or (lambda _cookies: _with_code(probe)),
     )
 
 
@@ -262,7 +268,7 @@ def test_resolve_identity_keeps_what_it_got(page_text, probe, expected_identity,
     """缺陷 1/3 回归：denied 不许被昵称解析失败带跑偏；已拿到的字段不许丢。"""
     from wx_channels_mcp.auth.login import resolve_identity
 
-    identity, status = resolve_identity(page_text, {}, probe=lambda _c: probe)
+    identity, status, _code = resolve_identity(page_text, {}, probe=lambda _c: _with_code(probe))
 
     assert identity == expected_identity
     assert status == expected_probe
@@ -276,3 +282,66 @@ def test_denied_wins_even_with_nickname(tmp_path):
     assert result["identity"] == {"nickname": "小满的视频号"}
     assert result["identity_unverified"] is False
     assert "扫错了微信号" in result["message"]
+
+
+# --- spec v6.8：login_status=ok 必须是"真登进去" ---------------------------------
+
+
+def test_login_reports_not_logged_in_when_session_expires_immediately(tmp_path):
+    """11-17 真机：扫完立刻 300333，却打印 ok。现在必须报 not_logged_in。"""
+    result = _run(tmp_path, REAL_ACCIDENT_TEXT, probe=("error", None))
+
+    assert result["login_status"] == "ok"  # error(非 300333) 仍可 ok，见下一条
+
+    result = _run(
+        tmp_path / "b",
+        REAL_ACCIDENT_TEXT,
+        probe_fn=lambda _c: ("error", None, 300333),
+    )
+
+    assert result["login_status"] == "not_logged_in"
+    assert "扫码未完成或会话立即失效" in result["message"]
+
+
+def test_login_reports_not_logged_in_when_still_on_login_page(tmp_path):
+    class Page:
+        def url(self):
+            return "https://channels.weixin.qq.com/login.html"
+
+    from wx_channels_mcp.auth.login import login
+
+    class Session:
+        def cookies(self):
+            return [{"name": "sessionid", "value": "S"}, {"name": "wxuin", "value": "u"}]
+
+        def page_url(self):
+            return "https://channels.weixin.qq.com/login.html"
+
+        def page_text(self):
+            return "登录视频号助手"
+
+        def close(self):
+            pass
+
+    result = login(
+        tmp_path / "c.json",
+        profile_dir=tmp_path / "p",
+        session_factory=lambda _p: Session(),
+        sleep=lambda _s: None,
+        clock=lambda: 0.0,
+        state=login_mod.SessionState(tmp_path / "s.json"),
+        identity_probe=lambda _c: ("error", None, None),
+        redirect_wait_seconds=0,
+    )
+
+    assert result["login_status"] == "not_logged_in"
+    assert "仍停在登录页" in result["message"]
+
+
+def test_login_error_probe_without_expiry_stays_ok(tmp_path):
+    """spec v6.8 唯一例外：已进后台但 probe=error（网络毛刺）仍 ok，只提示重试 sync。"""
+    result = _run(tmp_path, NUMBERED_LAYOUT_TEXT, probe_fn=lambda _c: ("error", None, None))
+
+    assert result["login_status"] == "ok"
+    assert result["probe"] == "error"
+    assert "重试" in result["message"] or "探测失败" in result["message"]
