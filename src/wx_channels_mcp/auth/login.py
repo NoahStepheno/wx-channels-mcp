@@ -278,21 +278,21 @@ def login(
         clock=clock,
         redirect_wait_seconds=redirect_wait_seconds,
     )
-    target = write_cookies(cookies_path, cookies)
-    state = state or SessionState(DEFAULT_LOGIN_STATE_PATH)
-    state.note_login(now=_utcnow())
-
     identity, probe, code = resolve_identity(page_text, cookies, probe=identity_probe or _default_probe)
 
-    # spec v6.8：`ok` 必须同时满足"页面已离开 login.html"与"会话不是 300333"。
-    # 登录页本身就会下发 sessionid+wxuin，所以"cookie 齐"从构造上就不能证明登录成功。
+    # spec v6.8/v6.9：先判定，**只有真登进去才落盘与记时间线**。
+    # 失败也写会（1）把还能用的 cookie 换成登录页的匿名 cookie；
+    # （2）记下假的 login_at，让后续 300333 落进 600s 窗口被判 parse_failed —— 正是要消灭的误诊。
     still_on_login_page = bool(page_url) and "login.html" in page_url
     session_expired = code == EXPIRED_SESSION_CODE
+    logged_in = not (still_on_login_page or session_expired)
+
     result = {
-        "login_status": "not_logged_in" if (still_on_login_page or session_expired) else "ok",
-        "cookies_path": str(target),
+        "login_status": "ok" if logged_in else "not_logged_in",
+        "cookies_path": str(cookies_path),
+        "cookies_written": False,
         "cookie_names": sorted(cookies),
-        "login_at": state.login_at(),
+        "login_at": None,
         "profile_dir": str(profile_dir),
         "identity": identity,
         "identity_unverified": identity is None,
@@ -300,9 +300,21 @@ def login(
         # 探测结果独立于 identity：即使身份拿不到，也要能看出是"号不对"还是"查不到"
         "probe": probe,
     }
+
+    if logged_in:
+        target = write_cookies(cookies_path, cookies)
+        state = state or SessionState(DEFAULT_LOGIN_STATE_PATH)
+        state.note_login(now=_utcnow())
+        result["cookies_path"] = str(target)
+        result["cookies_written"] = True
+        result["login_at"] = state.login_at()
+
     if result["login_status"] != "ok":
         reason = "页面仍停在登录页" if still_on_login_page else "扫码后会话立即失效（errCode=300333）"
-        result["message"] = f"扫码未完成或会话立即失效：{reason}；请重新扫码，扫完确认页面已进入创作者中心"
+        result["message"] = (
+            f"扫码未完成或会话立即失效：{reason}；请重新扫码，扫完确认页面已进入创作者中心"
+            "（本次未写入 cookies，也未记录登录时间）"
+        )
     elif probe == PROBE_DENIED:
         result["message"] = (
             "该账号对 post_list 无权限（errCode=300002），很可能扫错了微信号："

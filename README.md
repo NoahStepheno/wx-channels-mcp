@@ -40,6 +40,8 @@ wx-channels-mcp export --out data/snapshots.csv
 
 **`sync --dry-run` 不是绝对只读**：遇到 `300333` 时它仍会刷新 `data/login_state.json` 的 `last_300333_at`（诊断时间线，不是内容数据），`login_at` 不动。排查时别以为 dry-run 什么文件都不碰。
 
+**失败的扫码不落盘、不记账**（spec v6.9）：`login` 判定为 `not_logged_in` 时**不写** `cookies.json`、**不记** `login_at`。否则一次误扫会覆盖掉还能用的 cookie，并让后续 `300333` 落进 600s 窗口被判成 `parse_failed`（把人引去查 parser）。
+
 **`login` 只有真登进去才 `exit 0`**（spec v6.8）：必须同时满足「页面已离开 `login.html` 进入 `/platform`」与「登录后探测不是 `300333`」。任一不满足 → `login_status: "not_logged_in"` + `exit 2` + 「扫码未完成，请重扫」。登录页本身就会下发 `sessionid`/`wxuin`，所以"cookie 齐"证明不了登录成功（11-17 真机踩过：扫完打印 ok，`sync` 立刻 `300333`）。
 
 **登录成功不等于号对。** `login` 会输出 `identity`（`nickname` + `video_count`，取得到再带 `finder_id`）和**顶层** `probe`（`ok`/`denied`/`error`，`identity` 里不复制）：`video_count` **只**取自 `post_list.totalCount`，页面文本只给昵称（页面里有「视频号ID: …」和「关注者0」，从文本猜视频数会把 0 作品的号报成 28）。`probe: denied` 表示该账号对该接口无权限（300002），基本就是扫错号——**号对不对只看 `probe`，`nickname` 只用于展示、不参与任何判定**；身份拿不到时 `identity: null` + `identity_unverified: true`，登录本身仍算成功。跑 `sync` 前先看 `identity.video_count` 是不是你要复盘的那个号。两个错误码含义不同，别混：

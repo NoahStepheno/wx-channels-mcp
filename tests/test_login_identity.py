@@ -345,3 +345,77 @@ def test_login_error_probe_without_expiry_stays_ok(tmp_path):
     assert result["login_status"] == "ok"
     assert result["probe"] == "error"
     assert "重试" in result["message"] or "探测失败" in result["message"]
+
+
+# --- spec v6.9：失败不落盘、不记时间线（否则后续 300333 会被判 parse_failed） ----
+
+
+def _failed_login(tmp_path, code):
+    from wx_channels_mcp.auth.login import login
+
+    class Session:
+        def cookies(self):
+            return [{"name": "sessionid", "value": "BROKEN"}, {"name": "wxuin", "value": "u"}]
+
+        def page_url(self):
+            return "https://channels.weixin.qq.com/platform"
+
+        def page_text(self):
+            return "视频号 · 助手"
+
+        def close(self):
+            pass
+
+    return login(
+        tmp_path / "cookies.json",
+        profile_dir=tmp_path / "p",
+        session_factory=lambda _p: Session(),
+        sleep=lambda _s: None,
+        clock=lambda: 0.0,
+        state=login_mod.SessionState(tmp_path / "state.json"),
+        identity_probe=lambda _c: ("error", None, code),
+        redirect_wait_seconds=0,
+    )
+
+
+def test_failed_login_does_not_write_cookies(tmp_path):
+    """一次失败扫码不许覆盖还能用的 cookie。"""
+    existing = tmp_path / "cookies.json"
+    existing.write_text('{"sessionid": "GOOD", "wxuin": "u"}')
+
+    result = _failed_login(tmp_path, 300333)
+
+    assert result["login_status"] == "not_logged_in"
+    assert result["cookies_written"] is False
+    assert "GOOD" in existing.read_text(), "旧 cookie 必须原样保留"
+
+
+def test_failed_login_does_not_record_login_at(tmp_path):
+    """否则后续 300333 会落进 600s 窗口 → 判 parse_failed，把诊断方向带偏。"""
+    result = _failed_login(tmp_path, 300333)
+
+    assert result["login_at"] is None
+    from wx_channels_mcp.auth.session import SessionState
+
+    assert SessionState(tmp_path / "state.json").login_at() is None
+
+
+def test_failed_login_then_300333_is_still_login_required(tmp_path):
+    """失败扫码之后，同样的 300333 仍应去重扫，而不是去查 parser。"""
+    _failed_login(tmp_path, 300333)
+
+    from wx_channels_mcp.auth.session import SessionState
+
+    state = SessionState(tmp_path / "state.json")
+    reason, next_action = state.classify_expiry()
+
+    assert reason == "login_required"
+    assert next_action is not None
+
+
+def test_successful_login_still_writes_cookies(tmp_path):
+    result = _run(tmp_path, NUMBERED_LAYOUT_TEXT, probe=("ok", 1))
+
+    assert result["login_status"] == "ok"
+    assert result["cookies_written"] is True
+    assert result["login_at"] is not None
