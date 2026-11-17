@@ -69,6 +69,8 @@ class SessionState:
     def __init__(self, path: str | Path = DEFAULT_LOGIN_STATE_PATH) -> None:
         self._path = Path(path)
         self.last_note: str | None = None
+        self._save_failed = False
+        self._save_error: str | None = None
 
     # --- 状态读写 -------------------------------------------------------
 
@@ -84,8 +86,19 @@ class SessionState:
         return data if isinstance(data, dict) else {}
 
     def _save(self, data: dict) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        """写时间线；失败不抛（spec v6.7）——记账失败不许改变判定或让 sync 变 traceback。"""
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as exc:
+            self._save_failed = True
+            self._save_error = f"{type(exc).__name__}: {exc}"
+            new_note = (
+                f"未能刷新 last_300333_at（只读/权限/磁盘问题）：{self._save_error}；"
+                "判定照常给出，但诊断时间线未更新"
+            )
+            if self.last_note is None:
+                self.last_note = new_note
 
     def login_at(self) -> str | None:
         return self._load().get("login_at")

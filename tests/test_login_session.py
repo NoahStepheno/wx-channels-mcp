@@ -317,3 +317,70 @@ def test_window_never_touches_login_at(tmp_path):
     state.classify_expiry(now=NOW + timedelta(hours=2))
 
     assert state.login_at() == NOW.isoformat()
+
+
+# --- spec v6.7：状态时间线写入失败不得改变判定 ---------------------------------
+
+
+def test_readonly_state_file_does_not_raise_and_keeps_judgement(tmp_path, monkeypatch):
+    """回声 2026-11-17 09:10 真机反例：只读 state 让 sync 直接 traceback。"""
+    import wx_channels_mcp.auth.session as session_mod
+
+    state = _state(tmp_path)
+    real_write = session_mod.Path.write_text
+
+    def boom(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(session_mod.Path, "write_text", boom)
+    reason, next_action = state.classify_expiry(now=NOW)
+
+    monkeypatch.setattr(session_mod.Path, "write_text", real_write)
+    assert reason == "login_required"
+    assert next_action is not None
+    assert state.last_note is not None
+    assert "未能刷新 last_300333_at" in state.last_note
+    assert "PermissionError" in state.last_note
+
+
+def test_readonly_state_still_surfaces_in_sync_error_note(tmp_path, conn=None):
+    """sync 的错误摘要要带出 note，不能失声。"""
+    import sqlite3
+
+    from wx_channels_mcp.auth.session import SessionState
+    from wx_channels_mcp.fetch.errors import LoginRequired
+    from wx_channels_mcp.services.sync import sync
+    from wx_channels_mcp.storage.db import init_db
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    init_db(conn)
+    class BoomState(SessionState):
+        def _save(self, data):  # 直接模拟写失败
+            self.last_note = "未能刷新 last_300333_at（只读/权限/磁盘问题）：PermissionError"
+
+    class Api:
+        def list_posts(self, **_kwargs):
+            raise LoginRequired("接口返回 errCode=300333", code=300333)
+
+    boom = BoomState(tmp_path / "s2.json")
+    summary = sync(Api(), conn, now=NOW, session_state=boom)
+
+    assert summary.status == "login_required"
+    assert "未能刷新 last_300333_at" in summary.error["note"]
+
+
+def test_write_failure_never_overrides_clock_skew_note(tmp_path, monkeypatch):
+    """时钟回退的 note 更具体，写失败不许把它顶掉。"""
+    import wx_channels_mcp.auth.session as session_mod
+
+    state = _state(tmp_path)
+    state.note_login(now=NOW + timedelta(hours=1))
+    monkeypatch.setattr(
+        session_mod.Path, "write_text", lambda self, *a, **k: (_ for _ in ()).throw(OSError("disk full"))
+    )
+
+    reason, _ = state.classify_expiry(now=NOW)
+
+    assert reason == "parse_failed"
+    assert "系统时间早于 login_at" in state.last_note
