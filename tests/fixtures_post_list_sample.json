@@ -1,0 +1,24 @@
+{
+  "note": "真实 post_list 响应脱敏样例：仅保留指标字段，移除 desc.media[].url / uin / finder id 等凭证与直链",
+  "errcode": 0,
+  "list": [
+    {
+      "objectId": "export/UzFfBgAAxOGnDGpiRUqVk8zT4DCaE8DpS6M83r1Azepj-7FVFw",
+      "createTime": 1794231148,
+      "readCount": 574,
+      "fullPlayRate": 0.059233449477351915,
+      "avgPlayTimeSec": 23.79268292682927,
+      "fastFlipRate": 0.3360258481421648,
+      "likeCount": 9,
+      "commentCount": 10,
+      "forwardCount": 10,
+      "favCount": 11,
+      "followCount": 8,
+      "cancelFollowCount": "0",
+      "yesterdayReadCount": 12,
+      "visibleType": 1,
+      "status": 1,
+      "desc_text": "（已脱敏：视频直链与封面已移除）"
+    }
+  ]
+}
