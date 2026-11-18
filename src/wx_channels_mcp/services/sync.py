@@ -15,7 +15,7 @@ from wx_channels_mcp.fetch.errors import WxError
 from wx_channels_mcp.rules.window import classify_snapshot
 from wx_channels_mcp.services.absence import record_absence, record_present
 from wx_channels_mcp.services.normalize import to_metrics, to_video
-from wx_channels_mcp.storage.snapshots import freeze_snapshot
+from wx_channels_mcp.storage.snapshots import freeze_snapshot, get_snapshot
 from wx_channels_mcp.storage.videos import upsert_video
 
 MAX_PAGES = 10
@@ -119,6 +119,29 @@ def _classify_error(exc: WxError, *, session_state: SessionState | None, now: da
     return session_state.classify_expiry(now=now)
 
 
+STORED_SUMMARY_FIELDS = (
+    "offset_days",
+    "on_time",
+    "snapshot_late",
+    "play_count",
+    "finish_rate",
+    "avg_watch_sec",
+    "fetched_at",
+    "last_seen_at",
+)
+
+
+def _stored_view(conn, video_id: str, kind: str) -> dict | None:
+    """落库后回读一行，供 JSON 消费者区分「抓取值」与「冻结值」。"""
+    row = get_snapshot(conn, video_id, kind)
+    if row is None:
+        return None
+    return {
+        field: (bool(row[field]) if field in ("on_time", "snapshot_late") else row[field])
+        for field in STORED_SUMMARY_FIELDS
+    }
+
+
 def _handle_posts(posts, summary, conn, dry_run, moment, fetched_at, parser_version, batch_id) -> None:
     for post in posts:
         video = to_video(post)
@@ -157,6 +180,8 @@ def _handle_posts(posts, summary, conn, dry_run, moment, fetched_at, parser_vers
             **metrics,
         }
 
+        # 顶层字段是「本次抓取值」（历史契约，保留兼容）；stored 是落库后的真实行。
+        # 迟到重跑时两者会不同：冻结语义只推进 last_seen_at，不改 offset/指标。
         preview = {
             "video_id": video.video_id,
             "snapshot_kind": bucket.kind,
@@ -164,6 +189,7 @@ def _handle_posts(posts, summary, conn, dry_run, moment, fetched_at, parser_vers
             "on_time": bucket.on_time,
             "snapshot_late": bucket.late,
             "play_count": metrics.get("play_count"),
+            "stored": None,
         }
 
         if dry_run or conn is None:
@@ -184,6 +210,7 @@ def _handle_posts(posts, summary, conn, dry_run, moment, fetched_at, parser_vers
                 "enriched": list(result.enriched),
                 "anchor_status": stored[0] if stored else None,
                 "replay_suspected": stored[1] if stored else None,
+                "stored": _stored_view(conn, video.video_id, bucket.kind),
             }
         )
         summary.snapshots.append(preview)

@@ -290,6 +290,28 @@ and now >= login_at                            （时钟回退/文件被改 → 
 
 **P1（不进本次验收）**：`--expect-finder-id <id>`，与 `identity.finder_id` 不符时返回 `login_status: identity_mismatch` 且 exit 非 0——把"扫错号"从人工比对变成工具拦截。要不要做由 Human 定。
 
+### 6.1.2 `sync` 出参必须区分「本次抓取值」与「落库冻结值」（issue #4，2026-11-18 复验暴露）
+
+事实依据：2026-11-18 合后复验，Human 连跑两遍 `sync`。JSON 顶层报 `offset_days=8.909`、`on_time=false`、`snapshot_late=true`、`play_count=593`；而库内 d7 快照仍是 `7.597007 / on_time=1 / late=0 / play_count=579`（`inserted=false`、`enriched=[]`，只有 `last_seen_at` 前进）。两者都"对"，但同一份 JSON 里没有任何标注，Human 或下游照 JSON 填表就会把迟到重跑值当成 d7 快照值。
+
+`sync` 的快照条目（`snapshots[]`）字段契约：
+
+| 字段 | 语义 | 说明 |
+|---|---|---|
+| `video_id` / `snapshot_kind` | 标识 | `snapshot_kind` 是本次分桶结果 |
+| `inserted` / `enriched` | 落库动作 | 是否新插入 / 本次补空了哪些列 |
+| 顶层 `offset_days` / `on_time` / `snapshot_late` / `play_count` | **本次抓取值** | 沿用历史契约（兼容已消费 JSON 的下游），**不是**库内值 |
+| `stored` | **落库后的真实行**，dry-run 时为 `null` | 命中已有行时与顶层不同，属正常 |
+
+`stored` 必含：`offset_days`、`on_time`、`snapshot_late`、`play_count`、`finish_rate`、`avg_watch_sec`、`fetched_at`、`last_seen_at`。其中 `fetched_at` 是**首次插入时间**（不随重跑变），`last_seen_at` 是**最近观测时间**（每次抓取推进）——两者不可混用。
+
+判读口径（下游必读）：
+
+- 判幂等：看 `inserted` 与 `stored.last_seen_at`；
+- 判复盘数值：只看 `stored.*`；
+- 顶层 `play_count`/`offset_days` 只代表本次抓取，**禁止**写进记录表；
+- `inserted=true` 时 `stored.offset_days` 与**顶层** `offset_days` 相等（顶层即本次抓取值，输出中不存在 `fetched` 对象），且 `stored.fetched_at == stored.last_seen_at`。
+
 ### 6.2 MCP tools（如果没有 MCP 通道，CLI 先跑通，tool 后补）
 
 **`wx_browser_sync_channel_videos`**
@@ -329,6 +351,7 @@ and now >= login_at                            （时钟回退/文件被改 → 
 > - v1（`acceptance-v1`，1204b20）：12 条基础验收
 > - v2（2026-11-15）：+2 条。原因：探路发现真实数据源是同源 JSON 接口而非页面，必须增加「API 值 vs UI/导出抽样交叉校验」与「脱敏检查」，否则接口字段单位或语义漂移会静默污染复盘
 > - v3（2026-11-15）：把「口径证据」从"必须 UI 截图"放宽为「UI 截图 / 前端 bundle 标签映射 / 页面 DOM 可见文本，三者任一，须可指名来源」。原因：数据页是 canvas 渲染、`innerText` 为空，截图路径不稳，Human 也不该被当成唯一取证工具；同时要求原始值不改名、派生值单列
+> - v6.10（2026-11-18）：`sync` 出参新增 `stored` 子对象，明确「顶层=本次抓取值、`stored`=落库冻结值」；补 `fetched_at`/`last_seen_at` 区分首次写入与最近观测。起因：合后复验里同一份 JSON 混着实时值与冻结值，Human 差点把 8.909 天/593 播放记成 d7 快照值（issue #4）
 > - v6.9（2026-11-17）：明确「登录失败不得留下任何痕迹」——`not_logged_in` 不写 cookie、不记 `login_at`，输出 `cookies_written: false` / `login_at: null`。起因：v6.8 实现里先落盘后判定，一次失败扫码既会覆盖可用 cookie，又会让 `sync` 的 300333 落进 600s 窗口判成 `parse_failed`（"误诊换入口复活"）
 > - v6.8（2026-11-17）：`login_status: ok` 增加前置条件——必须真的进入创作者后台且登录后探测不是 300333，否则报 `not_logged_in`。原因：11-17 11:07 复扫，cookie 齐全、工具报 ok，但浏览器仍停在 `login.html`（"加载失败，点击重试"），sessionid 与 11-16 那份逐字节相同，`post_list` 300333——"cookie 在"被当成了"登录成"。根因：登录流程只轮询 cookie 出现，没有等页面离开登录页，也没有验证会话可用
 > - v6.7（2026-11-17）：新增「状态时间线写入失败不得改变判定」。原因：11-17 09:10 d7 验收时，`data/login_state.json` 不可写导致 `classify_expiry` 抛 `PermissionError`，`sync` 直接 traceback，而正确行为是照常返回 `login_required` 并把"未能刷新 last_300333_at"写进 note。只读 `DATA_DIR`、root 跑过后的权限漂移、受限执行环境都会触发
