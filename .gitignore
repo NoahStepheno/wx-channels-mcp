@@ -3,14 +3,18 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+venv/
 .pytest_cache/
 build/
 dist/
+*.log
+.DS_Store
 
 # 本地探路/运行产物：登录态、缓存、截图与原始 JSON 一律不入库
 .botharness/
+probe-out/
 
-# 数据与登录态
+# 数据与登录态（data/ 含正式库与登录态时间线）
 data/
 *.sqlite
 *.db
