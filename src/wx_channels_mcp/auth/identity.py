@@ -7,7 +7,7 @@ r"""登录身份解析（spec 6.1.1 / v6）：login 必须能说出"登进去的
 页面文本里绝不猜视频数：事故页面有「视频号ID: …」和「关注者0」，用 `视频\s*(\d+)`
 会把 0 作品的号解析成 28——编数比不报严重得多（2026-11-16 回声验收）。
 
-任一项拿不到都降级为 `identity: null` + `identity_unverified: true`，绝不让登录失败；
+`identity` 只收确实拿到的字段，一个都没有才是 `null`（`identity_unverified = identity is None`，spec §6.1.1 机械定义）；`nickname` 缺失不影响 `identity_unverified`、`probe` 与 `video_count`；任一项拿不到都不会让登录失败。
 探测结果用 `probe` 明说：`ok` / `denied`(300002，很可能扫错号) / `error`。
 """
 
