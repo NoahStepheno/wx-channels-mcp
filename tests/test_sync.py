@@ -209,3 +209,47 @@ def test_300002_is_parse_failed_with_wrong_account_hint_not_login(conn):
     assert summary.status == "parse_failed"
     assert "next_action" not in summary.error
     assert "登录账号不对" in summary.error["message"]
+
+
+STORED_FIELDS = (
+    "offset_days",
+    "on_time",
+    "snapshot_late",
+    "play_count",
+    "finish_rate",
+    "avg_watch_sec",
+    "fetched_at",
+    "last_seen_at",
+)
+
+
+def test_preview_distinguishes_fetched_from_stored(conn):
+    """issue #4：JSON 顶层是本次抓取值，stored 必须是落库后的真实行。"""
+    first = sync(FakeApi(FIXTURE_POSTS), conn, now=FETCH_AT)
+    row = first.snapshots[0]
+
+    assert set(STORED_FIELDS) <= set(row["stored"])
+    assert row["stored"]["play_count"] == 574
+    assert row["stored"]["fetched_at"] == row["stored"]["last_seen_at"]
+    assert row["stored"]["offset_days"] == pytest.approx(row["offset_days"], abs=1e-3)
+
+    # 重跑：平台播放量涨到 999，但 d3 快照已冻结 → fetched 变、stored 不变
+    post = json.loads(json.dumps(FIXTURE_POSTS[0]))
+    post["readCount"] = 999
+    later = datetime(2026, 11, 12, 19, 0, tzinfo=timezone.utc)
+    second = sync(FakeApi([post]), conn, now=later)
+    row = second.snapshots[0]
+
+    assert row["inserted"] is False
+    assert row["play_count"] == 999, "顶层是本次抓取值"
+    assert row["stored"]["play_count"] == 574, "stored 是冻结后的库内值"
+    assert row["stored"]["offset_days"] == pytest.approx(3.0606, abs=1e-3)
+    assert row["stored"]["last_seen_at"] > row["stored"]["fetched_at"]
+    assert row["stored"]["on_time"] is True
+
+
+def test_preview_dry_run_has_no_stored_row(conn):
+    summary = sync(FakeApi(FIXTURE_POSTS), conn, dry_run=True, now=FETCH_AT)
+    row = summary.snapshots[0]
+    assert row["stored"] is None
+    assert conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0] == 0
