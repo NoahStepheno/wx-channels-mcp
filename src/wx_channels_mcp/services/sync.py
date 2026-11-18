@@ -8,7 +8,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from wx_channels_mcp.auth.session import NEXT_ACTION_RELOGIN, SessionState
 from wx_channels_mcp.config import DEFAULT_LOOKBACK_DAYS, DEFAULT_PAGE_SIZE
+from wx_channels_mcp.fetch.client import EXPIRED_SESSION_CODE
 from wx_channels_mcp.fetch.errors import WxError
 from wx_channels_mcp.rules.window import classify_snapshot
 from wx_channels_mcp.services.absence import record_absence, record_present
@@ -58,6 +60,7 @@ def sync(
     max_pages: int = MAX_PAGES,
     json_path: str | Path | None = None,
     parser_version: str = "0.1.0",
+    session_state: SessionState | None = None,
 ) -> SyncSummary:
     """执行一次同步。
 
@@ -85,8 +88,14 @@ def sync(
                 timestamp_ms=str(int(moment.timestamp() * 1000)),
             )
         except WxError as exc:
-            summary.status = exc.reason
-            summary.error = {"reason": exc.reason, "message": str(exc), "detail": exc.detail[:200]}
+            reason, next_action = _classify_error(exc, session_state=session_state, now=moment)
+            summary.status = reason
+            summary.error = {"reason": reason, "message": str(exc), "detail": exc.detail[:200]}
+            if next_action:
+                summary.error["next_action"] = next_action
+            note = getattr(session_state, "last_note", None) if session_state is not None else None
+            if note:
+                summary.error["note"] = note
             break
 
         posts = ((data.get("data") or {}).get("list")) or []
@@ -97,6 +106,17 @@ def sync(
     if json_path:
         Path(json_path).write_text(json.dumps(summary.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
+
+
+def _classify_error(exc: WxError, *, session_state: SessionState | None, now: datetime) -> tuple[str, str | None]:
+    """300333 的 login_required / parse_failed 之争由登录时间线裁决（spec f2dbf0a）。"""
+    if exc.reason != "login_required":
+        return exc.reason, None
+    if getattr(exc, "code", None) != EXPIRED_SESSION_CODE:
+        return exc.reason, NEXT_ACTION_RELOGIN
+    if session_state is None:
+        return exc.reason, NEXT_ACTION_RELOGIN
+    return session_state.classify_expiry(now=now)
 
 
 def _handle_posts(posts, summary, conn, dry_run, moment, fetched_at, parser_version, batch_id) -> None:

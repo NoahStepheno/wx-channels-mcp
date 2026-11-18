@@ -8,9 +8,11 @@ class WxError(Exception):
 
     reason = "parse_failed"
 
-    def __init__(self, message: str, *, detail: str = "") -> None:
+    def __init__(self, message: str, *, detail: str = "", code: int | None = None) -> None:
         super().__init__(message)
         self.detail = detail
+        # 平台原始 errCode：300333 这类要靠它判定"登录态过期"而不是"解析失败"
+        self.code = code
 
     @property
     def readable(self) -> str:
@@ -28,8 +30,10 @@ class RateLimited(WxError):
 
     reason = "rate_limited"
 
-    def __init__(self, message: str, *, cooldown_until: str | None = None, detail: str = "") -> None:
-        super().__init__(message, detail=detail)
+    def __init__(
+        self, message: str, *, cooldown_until: str | None = None, detail: str = "", code: int | None = None
+    ) -> None:
+        super().__init__(message, detail=detail, code=code)
         self.cooldown_until = cooldown_until
 
 
