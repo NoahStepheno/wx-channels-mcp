@@ -33,3 +33,44 @@ def test_errors_expose_state_bucket(exc_class, reason):
     assert isinstance(err, WxError)
     assert err.reason == reason
     assert err.readable.startswith(reason)
+
+
+def test_err_code_300333_is_login_required_at_client_layer():
+    """300333 = 登录态过期（spec f2dbf0a）；取数层先归 login_required，降级由 sync 决定。"""
+    from wx_channels_mcp.fetch.client import business_error_reason
+
+    assert business_error_reason(300333) == "login_required"
+    assert business_error_reason(300999) == "parse_failed"
+    assert business_error_reason(0) is None
+
+
+def test_login_required_carries_original_error_code():
+    err = LoginRequired("接口返回 errCode=300333", code=300333)
+
+    assert err.code == 300333
+    assert err.reason == "login_required"
+
+
+def test_err_code_300002_points_at_wrong_account_not_login():
+    """v5：300002 = 账号无该接口权限（号不对），绝不能判 login_required。"""
+    from wx_channels_mcp.fetch.client import business_error_reason
+
+    assert business_error_reason(300002) == "parse_failed"
+
+
+def test_300002_message_hints_at_wrong_account():
+    from wx_channels_mcp.fetch.client import build_parse_failed
+
+    err = build_parse_failed(300002, "request failed", detail="{}")
+
+    assert err.reason == "parse_failed"
+    assert err.code == 300002
+    assert "账号不对" in str(err)
+
+
+def test_other_err_codes_keep_plain_parse_failed_message():
+    from wx_channels_mcp.fetch.client import build_parse_failed
+
+    err = build_parse_failed(300999, "request failed")
+
+    assert "账号不对" not in str(err)

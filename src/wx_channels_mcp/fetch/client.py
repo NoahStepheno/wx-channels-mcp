@@ -1,10 +1,11 @@
 """HTTP 取数层：只吃 cookie + 参数，不依赖 Playwright 生命周期。
 
-失败分类（acceptance-v4 / 回声要求）：
+失败分类（acceptance-v4 / spec f2dbf0a）：
 - HTTP 429                 -> rate_limited（可退避）
 - HTTP 401/403             -> login_required
 - 返回体是 HTML/非 JSON     -> login_required（登录页）或 parse_failed
-- 业务 errCode != 0        -> parse_failed（保留原始 errCode/errMsg）
+- 业务 errCode=300333      -> login_required（登录态过期；降级判定在 sync 层，靠登录时间线）
+- 其它业务 errCode != 0    -> parse_failed（保留原始 errCode/errMsg）
 """
 
 from __future__ import annotations
@@ -15,12 +16,32 @@ import urllib.request
 
 from wx_channels_mcp.fetch.errors import LoginRequired, ParseFailed, RateLimited
 
+# 300333：cookie 过期。语义上等于"重新扫码"，不等于"parser 不会解析"
+EXPIRED_SESSION_CODE = 300333
+# 300002：会话有效但该账号没有这个接口的权限 —— 是"号不对"，不是"登录过期"
+WRONG_ACCOUNT_CODE = 300002
+
 BASE_URL = "https://channels.weixin.qq.com"
 POST_LIST_PATH = "/cgi-bin/mmfinderassistant-bin/post/post_list"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
 )
+
+
+def build_parse_failed(err_code: int | None, err_msg: str | None, *, detail: str = "") -> ParseFailed:
+    """构造带排查提示的 parse_failed；300002 要点明"账号可能不对"。"""
+    message = f"接口返回 errCode={err_code} errMsg={err_msg!r}"
+    if err_code == WRONG_ACCOUNT_CODE:
+        message += "：可能是登录账号不对（该账号无该接口权限），请确认扫的是哪个视频号"
+    return ParseFailed(message, detail=detail, code=err_code)
+
+
+def business_error_reason(err_code: int | None) -> str | None:
+    """业务 errCode -> 失败原因；None 表示成功。"""
+    if err_code in (0, None):
+        return None
+    return "login_required" if err_code == EXPIRED_SESSION_CODE else "parse_failed"
 
 
 def classify_failure(status: int, content_type: str, text: str) -> str | None:
@@ -98,8 +119,15 @@ class WxApi:
             raise ParseFailed(f"返回体不是 JSON：{exc.msg}", detail=text[:200]) from exc
 
         err_code = data.get("errCode", 0)
-        if err_code not in (0, None):
-            raise ParseFailed(f"接口返回 errCode={err_code} errMsg={data.get('errMsg')!r}", detail=text[:200])
+        reason = business_error_reason(err_code)
+        if reason == "login_required":
+            raise LoginRequired(
+                f"接口返回 errCode={err_code} errMsg={data.get('errMsg')!r}：登录态过期，需重新扫码",
+                detail=text[:200],
+                code=err_code,
+            )
+        if reason:
+            raise build_parse_failed(err_code, data.get("errMsg"), detail=text[:200])
         return data
 
     # --- 业务 -----------------------------------------------------------
